@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Strahd Radio – Host Control</title>
+    <link rel="stylesheet" href="style.css">
 </head>
 <body>
     <h1>Strahd Radio – Host Control Panel</h1>
@@ -12,14 +13,16 @@
         <button onclick="sendCommand('next')">⏭️ Next Track</button>
         <!-- <button onclick="sendCommand('stop')">⏹️ Stop Playback</button> -->
     </div>
+<br>
+<h3>Change Playlist:</h3>
+<br>
+<select id="playlist-select">
+    <option disabled selected>Select Playlist</option>
+</select>
+<br>
+<button onclick="changePlaylist()">🎵 Change it</button>
 
-    <h3>Change Playlist:</h3>
-    <select id="playlist-select">
-        <option disabled selected>Loading playlists...</option>
-    </select>
-    <button onclick="changePlaylist()">🎵 Change</button>
-
-    <p id="status" style="margin-top: 20px; color: green;"></p>
+    <p id="status" style="margin-top: 20px; color: var(--green )"></p>
 
     <script>
         const statusEl = document.getElementById("status");

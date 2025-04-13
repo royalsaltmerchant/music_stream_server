@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Strahd Radio</title>
+    <link rel="stylesheet" href="style.css">
 </head>
 <body>
     <h1>Strahd Radio – Listener</h1>
@@ -12,14 +13,21 @@
 
     <audio id="radio" preload="none" style="display:none;"></audio><br>
 
-    <label>🔉 Volume:
+    <!-- <label for="volume">
+        <span class="volume-text">🔉 Volume:</span>
         <input type="range" id="volume" min="0" max="1" step="0.01" value="0.8">
-    </label>
+    </label> -->
+    <label for="volume">
+        <span class="volume-text">🔉 Volume: <span id="volume-display">80%</span></span>
+        <input type="range" id="volume" min="0" max="1" step="0.01" value="0.8">
+      </label>
 
     <script>
         const button = document.getElementById("start-button");
         const audio = document.getElementById("radio");
         const volumeSlider = document.getElementById("volume");
+        const volumeDisplay = document.getElementById("volume-display");
+
 
         button.addEventListener("click", () => {
             console.log("🎧 Start Listening clicked");
@@ -44,7 +52,10 @@
         });
 
         volumeSlider.addEventListener("input", () => {
-            audio.volume = parseFloat(volumeSlider.value);
+            const volValue = parseFloat(volumeSlider.value);
+            const volPercent = Math.round(volValue * 100);
+            audio.volume = volValue;
+            volumeDisplay.textContent = volPercent + '%';
         });
     </script>
 </body>
