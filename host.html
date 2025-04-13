@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Strahd Radio – Host Control</title>
+</head>
+<body>
+    <h1>Strahd Radio – Host Control Panel</h1>
+
+    <div>
+        <button onclick="sendCommand('next')">⏭️ Next Track</button>
+        <button onclick="sendCommand('stop')">⏹️ Stop Playback</button>
+    </div>
+
+    <h3>Change Playlist:</h3>
+    <select id="playlist-select">
+        <option disabled selected>Loading playlists...</option>
+    </select>
+    <button onclick="changePlaylist()">🎵 Change</button>
+
+    <p id="status" style="margin-top: 20px; color: green;"></p>
+
+    <script>
+        const statusEl = document.getElementById("status");
+        const playlistSelect = document.getElementById("playlist-select");
+
+        async function fetchPlaylists() {
+            try {
+                const res = await fetch("/playlists");
+                const data = await res.json();
+
+                playlistSelect.innerHTML = ""; // Clear existing
+                data.playlists.forEach(pl => {
+                    const option = document.createElement("option");
+                    option.value = pl;
+                    option.textContent = pl;
+                    playlistSelect.appendChild(option);
+                });
+            } catch (err) {
+                statusEl.textContent = "❌ Failed to fetch playlists.";
+                console.error(err);
+            }
+        }
+
+        async function sendCommand(cmd) {
+            try {
+                const res = await fetch("/command", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ command: cmd })
+                });
+
+                const data = await res.json();
+                statusEl.textContent = `✅ Sent command: ${data.received}`;
+            } catch (err) {
+                statusEl.textContent = "❌ Command failed.";
+                console.error(err);
+            }
+        }
+
+        function changePlaylist() {
+            const selected = playlistSelect.value;
+            if (!selected) return;
+            sendCommand("change music/strahd/" + selected);
+        }
+
+        fetchPlaylists();
+    </script>
+</body>
+</html>
