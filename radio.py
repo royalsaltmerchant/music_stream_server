@@ -116,7 +116,7 @@ def audio_streamer(initial_dir: str):
             proc.kill()
 
 # === Flask App ===
-app = Flask(__name__)
+app = Flask(__name__, static_folder="static")
 
 @app.route('/listen')
 def listen():
