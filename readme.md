@@ -1,0 +1,1 @@
+install python libs and also ffmpeg

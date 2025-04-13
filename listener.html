@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Julian's Radio</title>
+</head>
+<body>
+    <h1>Julian's Radio – Listener</h1>
+
+    <button id="start-button">▶️ Start Listening</button><br><br>
+
+    <audio id="radio" controls preload="none" style="display:none;"></audio><br>
+
+    <label>🔉 Volume:
+        <input type="range" id="volume" min="0" max="1" step="0.01" value="0.8">
+    </label>
+
+    <script>
+        const button = document.getElementById("start-button");
+        const audio = document.getElementById("radio");
+        const volumeSlider = document.getElementById("volume");
+
+        button.addEventListener("click", () => {
+            console.log("🎧 Start Listening clicked");
+
+            audio.pause();
+            audio.src = "";
+            audio.load();
+
+            audio.src = "/stream?_=" + Date.now();
+            audio.load();
+            audio.volume = parseFloat(volumeSlider.value);
+            audio.style.display = "inline";
+            button.style.display = "none";
+
+            setTimeout(() => {
+                audio.play().then(() => {
+                    console.log("🎶 Playback started");
+                }).catch(err => {
+                    console.error("❌ Playback error:", err);
+                });
+            }, 500);
+        });
+
+        volumeSlider.addEventListener("input", () => {
+            audio.volume = parseFloat(volumeSlider.value);
+        });
+    </script>
+</body>
+</html>
