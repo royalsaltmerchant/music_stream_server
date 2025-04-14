@@ -1,62 +1,70 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Strahd Radio</title>
-    <link rel="stylesheet" href="static/style.css">
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Strahd Radio</title>
+  <link rel="stylesheet" href="static/style.css" />
 </head>
 <body>
-    <h1>Strahd Radio – Listener</h1>
+  <h1>Strahd Radio – Listener</h1>
 
-    <button id="start-button">▶️ Start Listening</button><br><br>
+  <button id="start-button">▶️ Start Listening</button><br /><br />
+  <p><strong>Listening Channel:</strong> <span id="channel-name"></span></p>
 
-    <audio id="radio" preload="none" style="display:none;"></audio><br>
+  <audio id="radio" preload="none" style="display: none"></audio><br />
 
-    <!-- <label for="volume">
-        <span class="volume-text">🔉 Volume:</span>
-        <input type="range" id="volume" min="0" max="1" step="0.01" value="0.8">
-    </label> -->
-    <label for="volume">
-        <span class="volume-text">🔉 Volume: <span id="volume-display">80%</span></span>
-        <input type="range" id="volume" min="0" max="1" step="0.01" value="0.8">
-      </label>
+  <label for="volume">
+    <span class="volume-text">
+      🔉 Volume: <span id="volume-display">80%</span>
+    </span>
+    <input type="range" id="volume" min="0" max="1" step="0.01" value="0.8" />
+  </label>
 
-    <script>
-        const button = document.getElementById("start-button");
-        const audio = document.getElementById("radio");
-        const volumeSlider = document.getElementById("volume");
-        const volumeDisplay = document.getElementById("volume-display");
+  <script>
+    const button = document.getElementById("start-button");
+    const audio = document.getElementById("radio");
+    const volumeSlider = document.getElementById("volume");
+    const volumeDisplay = document.getElementById("volume-display");
+
+    const urlParams = new URLSearchParams(window.location.search);
+    const channel = urlParams.get("channel");
+    document.getElementById("channel-name").textContent = channel || "(none)";
 
 
-        button.addEventListener("click", () => {
-            console.log("🎧 Start Listening clicked");
+    if (!channel) {
+      alert("Missing channel in URL. Please use ?channel=alpha");
+      button.disabled = true;
+    }
 
-            audio.pause();
-            audio.src = "";
-            audio.load();
+    button.addEventListener("click", () => {
+      console.log("🎧 Connecting to channel:", channel);
 
-            audio.src = "/stream?_=" + Date.now();
-            audio.load();
-            audio.volume = parseFloat(volumeSlider.value);
-            audio.style.display = "inline";
-            button.style.display = "none";
+      audio.pause();
+      audio.src = "";
+      audio.load();
 
-            setTimeout(() => {
-                audio.play().then(() => {
-                    console.log("🎶 Playback started");
-                }).catch(err => {
-                    console.error("❌ Playback error:", err);
-                });
-            }, 500);
+      audio.src = "/stream?channel=" + encodeURIComponent(channel) + "&_=" + Date.now();
+      audio.load();
+      audio.volume = parseFloat(volumeSlider.value);
+      audio.style.display = "inline";
+      button.style.display = "none";
+
+      setTimeout(() => {
+        audio.play().then(() => {
+          console.log("🎶 Playback started");
+        }).catch((err) => {
+          console.error("❌ Playback error:", err);
         });
+      }, 500);
+    });
 
-        volumeSlider.addEventListener("input", () => {
-            const volValue = parseFloat(volumeSlider.value);
-            const volPercent = Math.round(volValue * 100);
-            audio.volume = volValue;
-            volumeDisplay.textContent = volPercent + '%';
-        });
-    </script>
+    volumeSlider.addEventListener("input", () => {
+      const volValue = parseFloat(volumeSlider.value);
+      const volPercent = Math.round(volValue * 100);
+      audio.volume = volValue;
+      volumeDisplay.textContent = volPercent + "%";
+    });
+  </script>
 </body>
 </html>

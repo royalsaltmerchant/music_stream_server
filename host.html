@@ -1,74 +1,115 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Strahd Radio – Host Control</title>
-    <link rel="stylesheet" href="static/style.css">
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Strahd Radio – Host Control</title>
+  <link rel="stylesheet" href="static/style.css" />
 </head>
 <body>
-    <h1>Strahd Radio – Host Control Panel</h1>
+  <h1>Strahd Radio – Host Control Panel</h1>
 
-    <div>
-        <button onclick="sendCommand('next')">⏭️ Next Track</button>
-        <!-- <button onclick="sendCommand('stop')">⏹️ Stop Playback</button> -->
-    </div>
-<br>
-<h3>Change Playlist:</h3>
-<br>
-<select id="playlist-select">
+  <p><strong>Managing Channel:</strong> <span id="channel-name"></span></p>
+
+  <div>
+    <button onclick="sendCommand('next')">⏭️ Next Track</button>
+  </div>
+
+  <br />
+  <h3>Change Playlist:</h3>
+  <br />
+  <select id="playlist-select">
     <option disabled selected>Select Playlist</option>
-</select>
-<br>
-<button onclick="changePlaylist()">🎵 Change it</button>
+  </select>
+  <br />
+  <button onclick="changePlaylist()">🎵 Start Playlist</button>
 
-    <p id="status" style="margin-top: 20px; color: var(--green )"></p>
+  <p id="status" style="margin-top: 20px; color: var(--green)"></p>
 
-    <script>
-        const statusEl = document.getElementById("status");
-        const playlistSelect = document.getElementById("playlist-select");
+  <script>
+    const statusEl = document.getElementById("status");
+    const playlistSelect = document.getElementById("playlist-select");
 
-        async function fetchPlaylists() {
-            try {
-                const res = await fetch("/playlists");
-                const data = await res.json();
+    const urlParams = new URLSearchParams(window.location.search);
+    const CHANNEL = urlParams.get("channel");
+    document.getElementById("channel-name").textContent = CHANNEL || "(none)";
 
-                playlistSelect.innerHTML = ""; // Clear existing
-                data.playlists.forEach(pl => {
-                    const option = document.createElement("option");
-                    option.value = pl;
-                    option.textContent = pl;
-                    playlistSelect.appendChild(option);
-                });
-            } catch (err) {
-                statusEl.textContent = "❌ Failed to fetch playlists.";
-                console.error(err);
-            }
+    if (!CHANNEL) {
+      alert("Missing channel name in URL. Please use ?channel=alpha");
+    }
+
+    async function fetchPlaylists() {
+      try {
+        const res = await fetch("/playlists");
+        const data = await res.json();
+
+        playlistSelect.innerHTML = '<option disabled selected>Select Playlist</option>';
+        data.playlists.forEach((pl) => {
+          const option = document.createElement("option");
+          option.value = pl;
+          option.textContent = pl;
+          playlistSelect.appendChild(option);
+        });
+      } catch (err) {
+        statusEl.textContent = "❌ Failed to fetch playlists.";
+        console.error(err);
+      }
+    }
+
+    async function sendCommand(cmd) {
+      if (!CHANNEL) return;
+
+      try {
+        const res = await fetch("/command", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ channel: CHANNEL, command: cmd })
+        });
+
+        const data = await res.json();
+        if (res.ok) {
+          statusEl.textContent = `✅ Sent command: ${data.channel} → ${cmd}`;
+        } else {
+          statusEl.textContent = `❌ Error: ${data.error}`;
         }
+      } catch (err) {
+        statusEl.textContent = "❌ Command failed.";
+        console.error(err);
+      }
+    }
 
-        async function sendCommand(cmd) {
-            try {
-                const res = await fetch("/command", {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ command: cmd })
-                });
+    async function changePlaylist() {
+      if (!CHANNEL) return;
 
-                const data = await res.json();
-                statusEl.textContent = `✅ Sent command: ${data.received}`;
-            } catch (err) {
-                statusEl.textContent = "❌ Command failed.";
-                console.error(err);
-            }
+      const selected = playlistSelect.value;
+      if (!selected) {
+        statusEl.textContent = "❌ No playlist selected.";
+        return;
+      }
+
+      try {
+        const res = await fetch("/command", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            channel: CHANNEL,
+            playlist: selected
+          })
+        });
+
+        const data = await res.json();
+        if (res.ok) {
+          statusEl.textContent = `✅ Channel "${data.channel}" now playing "${selected}"`;
+        } else {
+          statusEl.textContent = `❌ ${data.error}`;
         }
+      } catch (err) {
+        statusEl.textContent = "❌ Playlist change failed.";
+        console.error(err);
+      }
+    }
 
-        function changePlaylist() {
-            const selected = playlistSelect.value;
-            if (!selected) return;
-            sendCommand("change music/strahd/" + selected);
-        }
-
-        fetchPlaylists();
-    </script>
+    fetchPlaylists();
+  </script>
 </body>
 </html>
