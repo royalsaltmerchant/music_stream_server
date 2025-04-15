@@ -5,7 +5,7 @@ import queue
 import os
 import sys
 import random
-from flask import Flask, Response, send_from_directory, request
+from flask import Flask, Response, send_from_directory, request, stream_with_context
 
 # === Config ===
 CHUNK_SIZE = 1024
@@ -141,12 +141,7 @@ class Channel:
         self.name = name
         self.current_playlist = None
         self.listener_queues = set()
-        self.name = name
         self.listener_registry = listener_registry
-        self.current_playlist = None
-        self.name = name
-        self.listener_registry = listener_registry
-        self.current_playlist = None
 
     def play_playlist(self, playlist_path: str, streamers: dict):
         if self.current_playlist == playlist_path:
@@ -249,8 +244,6 @@ class RadioWebService:
                         pass
                     finally:
                         self.channels[channel_name].listener_queues.discard(client_queue)
-
-                from flask import stream_with_context
 
                 headers = {
                     "Content-Type": "audio/mpeg",
