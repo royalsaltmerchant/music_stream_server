@@ -1,17 +1,28 @@
-import threading
 import queue
 import os
-from config import AVAILABLE_CHANNELS, MUSIC_BASE_DIR, LISTENER_QUEUE_MAXSIZE, SILENT_BUFFER
+from config import (
+    AVAILABLE_CHANNELS,
+    MUSIC_BASE_DIR,
+    LISTENER_QUEUE_MAXSIZE,
+    SILENT_BUFFER,
+)
 from channel import Channel
 from flask import Flask, Response, send_from_directory, request, stream_with_context
+
+from gevent import pywsgi
+from gevent.monkey import patch_all
+
+patch_all()
 
 
 # === Web Service ===
 class RadioWebService:
     def __init__(self):
         self.app = Flask(__name__, static_folder="static")
-        # Init Channles
-        self.channels = {name: Channel(name=name, get_channels_list_CB=self.get_channels_list) for name in AVAILABLE_CHANNELS}
+        self.channels = {
+            name: Channel(name=name, get_channels_list_CB=self.get_channels_list)
+            for name in AVAILABLE_CHANNELS
+        }
 
         self.listener_registry = {}
         self.streamers = {}
@@ -28,32 +39,36 @@ class RadioWebService:
 
     def _define_routes(self):
         self.streamers = {}
-        @self.app.route('/')
+
+        @self.app.route("/")
         def index():
-            return send_from_directory('.', 'index.html')
-        @self.app.route('/channels')
+            return send_from_directory(".", "index.html")
+
+        @self.app.route("/channels")
         def list_channels():
             return {"channels": AVAILABLE_CHANNELS}
-        @self.app.route('/listen')
-        def listen():
-            return send_from_directory('.', 'listener.html')
 
-        @self.app.route('/playlists')
+        @self.app.route("/listen")
+        def listen():
+            return send_from_directory(".", "listener.html")
+
+        @self.app.route("/playlists")
         def get_playlists():
             try:
                 playlists = [
-                    name for name in os.listdir(MUSIC_BASE_DIR)
+                    name
+                    for name in os.listdir(MUSIC_BASE_DIR)
                     if os.path.isdir(os.path.join(MUSIC_BASE_DIR, name))
                 ]
                 return {"playlists": playlists}
             except Exception as e:
                 return {"error": str(e)}, 500
 
-        @self.app.route('/host')
+        @self.app.route("/host")
         def host():
-            return send_from_directory('.', 'host.html')
+            return send_from_directory(".", "host.html")
 
-        @self.app.route('/command', methods=['POST'])
+        @self.app.route("/command", methods=["POST"])
         def command():
             cmd = request.json.get("command")
             channel_name = request.json.get("channel")
@@ -61,7 +76,7 @@ class RadioWebService:
             if not channel_name:
                 return {"error": "Missing channel name"}, 400
             try:
-                channel = channel = self._get_channel(channel_name)
+                channel = self._get_channel(channel_name)
                 if playlist:
                     playlist_path = os.path.join(MUSIC_BASE_DIR, playlist)
                     if not os.path.isdir(playlist_path):
@@ -75,7 +90,7 @@ class RadioWebService:
             except Exception as e:
                 return {"error": str(e)}, 500
 
-        @self.app.route('/stream')
+        @self.app.route("/stream")
         def stream():
             channel_name = request.args.get("channel")
             if not channel_name:
@@ -91,50 +106,42 @@ class RadioWebService:
                     pass
 
                 def generate():
+                    print("[Stream] Client connected:", channel_name)
                     try:
                         yield SILENT_BUFFER
                         while True:
-                            chunk = client_queue.get(timeout=5)
+                            try:
+                                chunk = client_queue.get(timeout=5)
+                            except queue.Empty:
+                                chunk = SILENT_BUFFER
                             yield chunk
-                    except queue.Empty:
-                        pass
                     finally:
-                        self.channels[channel_name].listener_queues.discard(client_queue)
+                        self.channels[channel_name].listener_queues.discard(
+                            client_queue
+                        )
 
-                headers = {
-                    "Content-Type": "audio/mpeg",
-                    "Cache-Control": "no-cache",
-                    "Connection": "keep-alive",
-                    "Transfer-Encoding": "chunked",
-                }
-
-                return Response(
-                    stream_with_context(generate()),
-                    headers=headers,
-                    direct_passthrough=True
+                response = Response(
+                    stream_with_context(generate()), mimetype="audio/mpeg"
                 )
+                response.headers.update(
+                    {
+                        "Cache-Control": "no-cache",
+                        "Connection": "keep-alive",
+                    }
+                )
+                return response
+
             except Exception as e:
                 return Response(str(e), status=500)
 
-    def start(self):
-        threading.Thread(
-            target=self.app.run,
-            kwargs={"host": "0.0.0.0", "port": 8000, "threaded": True},
-            daemon=True
-        ).start()
 
 # === Main Entry Point ===
 if __name__ == "__main__":
     web_service = RadioWebService()
-    web_service.start()
-
-    print("📡 Flask radio server running at http://localhost:8000")
+    server = pywsgi.WSGIServer(("0.0.0.0", 8000), web_service.app)
+    print("📡 Gevent radio server running at http://localhost:8000")
 
     try:
-        while True:
-            cmd = input("Enter command: ")
-            if cmd == "quit":
-                print("[Main] Exiting app")
-                break
+        server.serve_forever()
     except KeyboardInterrupt:
         print("\n[Main] Keyboard interrupt received. Exiting.")

@@ -15,7 +15,10 @@ class Channel:
             return
         self.current_playlist = playlist_path
         if playlist_path not in streamers:
-            streamers[playlist_path] = AudioStreamer(playlist_path=playlist_path, get_channels_list_CB=self.get_channels_list_CB)
+            streamers[playlist_path] = AudioStreamer(
+                playlist_path=playlist_path,
+                get_channels_list_CB=self.get_channels_list_CB,
+            )
             streamers[playlist_path].start()
 
     def send_command(self, cmd: str, streamers: dict):
