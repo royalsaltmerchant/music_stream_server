@@ -138,8 +138,15 @@ class RadioWebService:
 # === Main Entry Point ===
 if __name__ == "__main__":
     web_service = RadioWebService()
-    server = pywsgi.WSGIServer(("0.0.0.0", 8000), web_service.app)
-    print("📡 Gevent radio server running at http://localhost:8000")
+
+    server = pywsgi.WSGIServer(
+        ("0.0.0.0", 443),
+        web_service.app,
+        certfile="/etc/letsencrypt/live/strahdradiolocal.farreachco.com/fullchain.pem",
+        keyfile="/etc/letsencrypt/live/strahdradiolocal.farreachco.com/privkey.pem"
+    )
+
+    print("📡 Gevent radio server running at https://strahdradiolocal.farreachco.com")
 
     try:
         server.serve_forever()
