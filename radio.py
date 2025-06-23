@@ -133,6 +133,23 @@ class Channel:
         old_playlist = self.current_playlist
         self.current_playlist = playlist_path
 
+        if playlist_path not in streamers or not streamers[playlist_path].thread.is_alive():
+            streamer = AudioStreamer(playlist_path=playlist_path)
+            streamers[playlist_path] = streamer
+            streamer.start()
+
+        if old_playlist and old_playlist in streamers:
+            old_streamer = streamers[old_playlist]
+            new_streamer = streamers[playlist_path]
+
+            if self.name in old_streamer.listener_queues:
+                for q in list(old_streamer.listener_queues[self.name]):
+                    old_streamer.remove_listener(self.name, q)
+                    new_streamer.add_listener(self.name, q)
+
+        old_playlist = self.current_playlist
+        self.current_playlist = playlist_path
+
         if playlist_path not in streamers:
             streamer = AudioStreamer(playlist_path=playlist_path)
             streamers[playlist_path] = streamer
