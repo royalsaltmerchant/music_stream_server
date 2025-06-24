@@ -278,10 +278,8 @@ class RadioWebService:
 if __name__ == "__main__":
     service = RadioWebService()
     server = pywsgi.WSGIServer(
-        ("0.0.0.0", 443),
+        ("0.0.0.0", 5000),
         service.app,
-        certfile="/etc/letsencrypt/live/strahdradiolocal.farreachco.com/fullchain.pem",
-        keyfile="/etc/letsencrypt/live/strahdradiolocal.farreachco.com/privkey.pem",
     )
     print("📡 Gevent radio server running at https://strahdradiolocal.farreachco.com")
     try:
