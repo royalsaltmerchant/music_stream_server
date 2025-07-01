@@ -10,7 +10,6 @@ from gevent.monkey import patch_all
 from typing import Callable
 
 from config import (
-    AVAILABLE_CHANNELS,
     MUSIC_BASE_DIR,
     LISTENER_QUEUE_MAXSIZE,
     SILENT_BUFFER,
