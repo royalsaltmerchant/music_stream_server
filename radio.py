@@ -173,14 +173,16 @@ class Channel:
 class RadioWebService:
     def __init__(self):
         self.app = Flask(__name__, static_folder="static")
-        self.channels = {name: Channel(name) for name in AVAILABLE_CHANNELS}
+        self.channels = {}
         self.streamers = {}
         self._define_routes()
 
     def _get_channel(self, name: str) -> Channel:
         if name not in self.channels:
-            raise ValueError(f"Channel '{name}' not found.")
+            print(f"[Channel] Creating new channel: {name}")
+            self.channels[name] = Channel(name)
         return self.channels[name]
+
 
     def _define_routes(self):
         @self.app.route("/")
@@ -189,15 +191,16 @@ class RadioWebService:
 
         @self.app.route("/listen")
         def listen():
+            channel_name = request.args.get("channel")
+            if not channel_name:
+                return Response("Missing channel name", status=400)
+
+            # auto-create listener page with dynamic JS if needed
             return send_from_directory(".", "listener.html")
 
         @self.app.route("/host")
         def host():
             return send_from_directory(".", "host.html")
-
-        @self.app.route("/channels")
-        def list_channels():
-            return {"channels": AVAILABLE_CHANNELS}
 
         @self.app.route("/playlists")
         def get_playlists():
@@ -264,6 +267,10 @@ class RadioWebService:
                             yield chunk
                     finally:
                         self.streamers[playlist].remove_listener(channel_name, q)
+                        # Optional cleanup
+                        if not self.streamers[playlist].listener_queues.get(channel_name):
+                            print(f"[Channel] No more listeners on '{channel_name}', removing channel")
+                            del self.channels[channel_name]
 
                 return Response(
                     stream_with_context(generate()),
@@ -281,7 +288,7 @@ if __name__ == "__main__":
         ("0.0.0.0", 5000),
         service.app,
     )
-    print("📡 Gevent radio server running at https://strahdradiolocal.farreachco.com")
+    print("📡 Gevent radio server running at http://localhost:5000")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
