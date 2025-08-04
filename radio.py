@@ -8,6 +8,7 @@ import random
 import threading
 import subprocess
 import urllib
+import logging
 from dataclasses import dataclass
 from functools import wraps
 from flask import (
@@ -35,6 +36,12 @@ from config import (
 )
 
 patch_all()
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s - %(message)s"
+)
+logger = logging.getLogger("radio")
 
 
 # === AudioStreamer ===
@@ -69,7 +76,7 @@ class AudioStreamer:
         last_listener_time = time.time()
         while True:
             if not os.path.exists(self.playlist_path):
-                print(f"[!] Folder '{self.playlist_path}' not found.")
+                logger.warning(f"[!] Folder '{self.playlist_path}' not found.")
                 time.sleep(5)
                 continue
 
@@ -82,7 +89,7 @@ class AudioStreamer:
             )
 
             if not playlist:
-                print("[!] No audio files found. Waiting...")
+                logger.warning("[!] No audio files found. Waiting...")
                 time.sleep(5)
                 continue
 
@@ -90,7 +97,7 @@ class AudioStreamer:
 
             for track in playlist:
                 track_path = os.path.join(self.playlist_path, track)
-                print(f"🎶 Now playing: {track}")
+                logger.info(f"🎶 Now playing: {track}")
 
                 proc = subprocess.Popen(
                     [
@@ -120,16 +127,16 @@ class AudioStreamer:
                         cmd = self.command_queue.get_nowait()
                         if cmd == "stop":
                             proc.kill()
-                            print("[Streamer] Stopped.")
+                            logger.info("[Streamer] Stopped.")
                             return
                         elif cmd == "next":
-                            print("[Streamer] Skipping track.")
+                            logger.info("[Streamer] Skipping track.")
                             proc.kill()
                             break
                         elif cmd.startswith("change"):
                             new_dir = cmd[len("change") :].strip()
                             if os.path.isdir(new_dir):
-                                print(f"[Streamer] Changing directory to: {new_dir}")
+                                logger.info(f"[Streamer] Changing directory to: {new_dir}")
                                 self.playlist_path = new_dir
                                 proc.kill()
                                 break
@@ -147,11 +154,11 @@ class AudioStreamer:
                                 except queue.Full:
                                     pass
                     else:
-                        print("[Streamer] End of track reached.")
+                        logger.info("[Streamer] End of track reached.")
                         break
 
                     if time.time() - last_listener_time > self.IDLE_TIMEOUT:
-                        print(
+                        logger.info(
                             f"[Streamer] No listeners for {self.IDLE_TIMEOUT} seconds. Exiting."
                         )
                         proc.kill()
@@ -222,7 +229,7 @@ class RadioWebService:
 
     def _get_channel(self, name: str) -> Channel:
         if name not in self.channels:
-            print(f"[Channel] Creating new channel: {name}")
+            logger.info(f"[Channel] Creating new channel: {name}")
             self.channels[name] = Channel(name)
         return self.channels[name]
 
@@ -242,7 +249,7 @@ class RadioWebService:
         cookie_str = urllib.parse.unquote(cookie_str)
 
         if not cookie_str.startswith("s:"):
-            print(
+            logger.warning(
                 "[VerifyCookie] Cookie does not start with 's:', skipping verification."
             )
             return False, None
@@ -250,7 +257,7 @@ class RadioWebService:
         try:
             value, sig = cookie_str[2:].split(".", 1)
         except ValueError:
-            print("[VerifyCookie] Failed to split cookie into value and signature.")
+            logger.warning("[VerifyCookie] Failed to split cookie into value and signature.")
             return False, None
 
         expected_sig = hmac.new(
@@ -262,10 +269,10 @@ class RadioWebService:
         cookie_sig_urlsafe = base64_to_base64url(sig)
 
         if hmac.compare_digest(expected_sig_b64, cookie_sig_urlsafe):
-            print("[VerifyCookie] Signature valid")
+            logger.info("[VerifyCookie] Signature valid")
             return True, value
         else:
-            print("[VerifyCookie] Signature mismatch")
+            logger.info("[VerifyCookie] Signature mismatch")
             return False, None
 
     def _define_routes(self):
@@ -273,12 +280,12 @@ class RadioWebService:
         def load_session():
             cookie = request.cookies.get(SESSION_COOKIE_NAME)
             if not cookie:
-                print("[Session] No session cookie")
+                logger.info("[Session] No session cookie")
                 return
 
             valid, session_id = self.verify_express_cookie(cookie, SESSION_SECRET)
             if not valid:
-                print("[Session] Invalid signature")
+                logger.info("[Session] Invalid signature")
                 return
 
             try:
@@ -290,16 +297,14 @@ class RadioWebService:
                         )
                         row = cur.fetchone()
                         if not row:
-                            print("[Session] Session expired or not found")
+                            logger.info("[Session] Session expired or not found")
                             return
 
                         session_data = row[0]
-                        print(f"[Session] session_data: {session_data}")
                         g.session_data = session_data
                         g.user_id = session_data.get("user")
-                        print(f"[Session] Valid session for user: {g.user_id}")
             except Exception as e:
-                print("[Session] Error accessing DB:", e)
+                logger.warning("[Session] Error accessing DB:", e)
 
         @self.app.route("/")
         def index():
@@ -376,7 +381,7 @@ class RadioWebService:
                     pass
 
                 def generate():
-                    print(f"[Stream] Client connected to {channel_name}")
+                    logger.info(f"[Stream] Client connected to {channel_name}")
                     try:
                         yield SILENT_BUFFER
                         while True:
@@ -391,7 +396,7 @@ class RadioWebService:
                         if not self.streamers[playlist].listener_queues.get(
                             channel_name
                         ):
-                            print(
+                            logger.info(
                                 f"[Channel] No more listeners on '{channel_name}', removing channel"
                             )
                             del self.channels[channel_name]
@@ -412,8 +417,8 @@ if __name__ == "__main__":
         ("0.0.0.0", 5000),
         service.app,
     )
-    print("📡 Gevent radio server running at http://localhost:5000")
+    logger.info("📡 Gevent radio server running at http://localhost:5000")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
-        print("\n[Main] Keyboard interrupt received. Exiting.")
+        logger.info("\n[Main] Keyboard interrupt received. Exiting.")
