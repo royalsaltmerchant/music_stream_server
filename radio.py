@@ -1,22 +1,41 @@
+import base64
+import hashlib
+import hmac
 import queue
 import os
 import time
 import random
 import threading
 import subprocess
-from flask import Flask, Response, send_from_directory, request, stream_with_context
+import urllib
+from dataclasses import dataclass
+from functools import wraps
+from flask import (
+    Flask,
+    Response,
+    g,
+    redirect,
+    send_from_directory,
+    request,
+    stream_with_context,
+)
 from gevent import pywsgi
 from gevent.monkey import patch_all
 from typing import Callable
+import psycopg2
 
 from config import (
-    MUSIC_BASE_DIR,
+    CHUNK_SIZE,
     LISTENER_QUEUE_MAXSIZE,
     SILENT_BUFFER,
-    CHUNK_SIZE,
+    SESSION_COOKIE_NAME,
+    SESSION_SECRET,
+    SESSION_DB_DSN,
+    MUSIC_BASE_DIR,
 )
 
 patch_all()
+
 
 # === AudioStreamer ===
 class AudioStreamer:
@@ -54,10 +73,13 @@ class AudioStreamer:
                 time.sleep(5)
                 continue
 
-            playlist = sorted([
-                f for f in os.listdir(self.playlist_path)
-                if f.lower().endswith((".mp3", ".wav", ".ogg", ".flac"))
-            ])
+            playlist = sorted(
+                [
+                    f
+                    for f in os.listdir(self.playlist_path)
+                    if f.lower().endswith((".mp3", ".wav", ".ogg", ".flac"))
+                ]
+            )
 
             if not playlist:
                 print("[!] No audio files found. Waiting...")
@@ -70,11 +92,28 @@ class AudioStreamer:
                 track_path = os.path.join(self.playlist_path, track)
                 print(f"🎶 Now playing: {track}")
 
-                proc = subprocess.Popen([
-                    "ffmpeg", "-hide_banner", "-loglevel", "quiet", "-re",
-                    "-i", track_path, "-vn", "-acodec", "libmp3lame",
-                    "-ar", "44100", "-b:a", "128k", "-f", "mp3", "-"
-                ], stdout=subprocess.PIPE)
+                proc = subprocess.Popen(
+                    [
+                        "ffmpeg",
+                        "-hide_banner",
+                        "-loglevel",
+                        "quiet",
+                        "-re",
+                        "-i",
+                        track_path,
+                        "-vn",
+                        "-acodec",
+                        "libmp3lame",
+                        "-ar",
+                        "44100",
+                        "-b:a",
+                        "128k",
+                        "-f",
+                        "mp3",
+                        "-",
+                    ],
+                    stdout=subprocess.PIPE,
+                )
 
                 while True:
                     try:
@@ -88,7 +127,7 @@ class AudioStreamer:
                             proc.kill()
                             break
                         elif cmd.startswith("change"):
-                            new_dir = cmd[len("change"):].strip()
+                            new_dir = cmd[len("change") :].strip()
                             if os.path.isdir(new_dir):
                                 print(f"[Streamer] Changing directory to: {new_dir}")
                                 self.playlist_path = new_dir
@@ -112,7 +151,9 @@ class AudioStreamer:
                         break
 
                     if time.time() - last_listener_time > self.IDLE_TIMEOUT:
-                        print(f"[Streamer] No listeners for {self.IDLE_TIMEOUT} seconds. Exiting.")
+                        print(
+                            f"[Streamer] No listeners for {self.IDLE_TIMEOUT} seconds. Exiting."
+                        )
                         proc.kill()
                         return
 
@@ -132,7 +173,10 @@ class Channel:
         old_playlist = self.current_playlist
         self.current_playlist = playlist_path
 
-        if playlist_path not in streamers or not streamers[playlist_path].thread.is_alive():
+        if (
+            playlist_path not in streamers
+            or not streamers[playlist_path].thread.is_alive()
+        ):
             streamer = AudioStreamer(playlist_path=playlist_path)
             streamers[playlist_path] = streamer
             streamer.start()
@@ -182,8 +226,80 @@ class RadioWebService:
             self.channels[name] = Channel(name)
         return self.channels[name]
 
+    def login_required(self, f):
+        @wraps(f)
+        def decorated(*args, **kwargs):
+            if not getattr(g, "user_id", None):
+                return redirect("https://farreachco.com/login")
+            return f(*args, **kwargs)
+
+        return decorated
+
+    def verify_express_cookie(self, cookie_str: str, secret: str):
+        def base64_to_base64url(s):
+            return s.replace("+", "-").replace("/", "_").rstrip("=")
+
+        cookie_str = urllib.parse.unquote(cookie_str)
+
+        if not cookie_str.startswith("s:"):
+            print(
+                "[VerifyCookie] Cookie does not start with 's:', skipping verification."
+            )
+            return False, None
+
+        try:
+            value, sig = cookie_str[2:].split(".", 1)
+        except ValueError:
+            print("[VerifyCookie] Failed to split cookie into value and signature.")
+            return False, None
+
+        expected_sig = hmac.new(
+            secret.encode(), msg=value.encode(), digestmod=hashlib.sha256
+        ).digest()
+        expected_sig_b64 = base64.urlsafe_b64encode(expected_sig).rstrip(b"=").decode()
+
+        # Convert incoming cookie signature to Base64URL format
+        cookie_sig_urlsafe = base64_to_base64url(sig)
+
+        if hmac.compare_digest(expected_sig_b64, cookie_sig_urlsafe):
+            print("[VerifyCookie] Signature valid")
+            return True, value
+        else:
+            print("[VerifyCookie] Signature mismatch")
+            return False, None
 
     def _define_routes(self):
+        @self.app.before_request
+        def load_session():
+            cookie = request.cookies.get(SESSION_COOKIE_NAME)
+            if not cookie:
+                return
+
+            valid, session_id = self.verify_express_cookie(cookie, SESSION_SECRET)
+            if not valid:
+                print("[Session] Invalid signature")
+                return
+
+            try:
+                with psycopg2.connect(SESSION_DB_DSN) as conn:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            "SELECT sess FROM session WHERE sid = %s AND expire > NOW()",
+                            (session_id,),
+                        )
+                        row = cur.fetchone()
+                        if not row:
+                            print("[Session] Session expired or not found")
+                            return
+
+                        session_data = row[0]
+                        print(f"[Session] session_data: {session_data}")
+                        g.session_data = session_data
+                        g.user_id = session_data.get("user")
+                        print(f"[Session] Valid session for user: {g.user_id}")
+            except Exception as e:
+                print("[Session] Error accessing DB:", e)
+
         @self.app.route("/")
         def index():
             return send_from_directory(".", "index.html")
@@ -198,14 +314,17 @@ class RadioWebService:
             return send_from_directory(".", "listener.html")
 
         @self.app.route("/host")
+        @self.login_required
         def host():
             return send_from_directory(".", "host.html")
 
         @self.app.route("/playlists")
+        @self.login_required
         def get_playlists():
             try:
                 playlists = [
-                    name for name in os.listdir(MUSIC_BASE_DIR)
+                    name
+                    for name in os.listdir(MUSIC_BASE_DIR)
                     if os.path.isdir(os.path.join(MUSIC_BASE_DIR, name))
                 ]
                 return {"playlists": playlists}
@@ -213,6 +332,7 @@ class RadioWebService:
                 return {"error": str(e)}, 500
 
         @self.app.route("/command", methods=["POST"])
+        @self.login_required
         def command():
             data = request.json
             cmd = data.get("command")
@@ -267,8 +387,12 @@ class RadioWebService:
                     finally:
                         self.streamers[playlist].remove_listener(channel_name, q)
                         # Optional cleanup
-                        if not self.streamers[playlist].listener_queues.get(channel_name):
-                            print(f"[Channel] No more listeners on '{channel_name}', removing channel")
+                        if not self.streamers[playlist].listener_queues.get(
+                            channel_name
+                        ):
+                            print(
+                                f"[Channel] No more listeners on '{channel_name}', removing channel"
+                            )
                             del self.channels[channel_name]
 
                 return Response(
