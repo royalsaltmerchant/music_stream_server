@@ -273,6 +273,7 @@ class RadioWebService:
         def load_session():
             cookie = request.cookies.get(SESSION_COOKIE_NAME)
             if not cookie:
+                print("[Session] No session cookie")
                 return
 
             valid, session_id = self.verify_express_cookie(cookie, SESSION_SECRET)
