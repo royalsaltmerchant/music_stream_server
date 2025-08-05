@@ -9,21 +9,14 @@ import threading
 import subprocess
 import urllib
 import logging
-from dataclasses import dataclass
-from functools import wraps
-from flask import (
-    Flask,
-    Response,
-    g,
-    redirect,
-    send_from_directory,
-    request,
-    stream_with_context,
-)
-from gevent import pywsgi
-from gevent.monkey import patch_all
-from typing import Callable
 import psycopg2
+import uvicorn
+
+from fastapi import FastAPI, Request, Response, Depends, HTTPException
+from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
+from starlette.middleware.base import BaseHTTPMiddleware
+
 
 from config import (
     CHUNK_SIZE,
@@ -35,11 +28,8 @@ from config import (
     MUSIC_BASE_DIR,
 )
 
-patch_all()
-
 logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s - %(message)s"
+    level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s - %(message)s"
 )
 logger = logging.getLogger("radio")
 
@@ -136,7 +126,9 @@ class AudioStreamer:
                         elif cmd.startswith("change"):
                             new_dir = cmd[len("change") :].strip()
                             if os.path.isdir(new_dir):
-                                logger.info(f"[Streamer] Changing directory to: {new_dir}")
+                                logger.info(
+                                    f"[Streamer] Changing directory to: {new_dir}"
+                                )
                                 self.playlist_path = new_dir
                                 proc.kill()
                                 break
@@ -222,9 +214,13 @@ class Channel:
 # === Radio Web Service ===
 class RadioWebService:
     def __init__(self):
-        self.app = Flask(__name__, static_folder="static")
+        self.app = FastAPI()
         self.channels = {}
         self.streamers = {}
+        self.app.add_middleware(
+            BaseHTTPMiddleware, dispatch=self.create_session_middleware()
+        )
+        self.app.mount("/static", StaticFiles(directory="static"), name="static")
         self._define_routes()
 
     def _get_channel(self, name: str) -> Channel:
@@ -233,14 +229,39 @@ class RadioWebService:
             self.channels[name] = Channel(name)
         return self.channels[name]
 
-    def login_required(self, f):
-        @wraps(f)
-        def decorated(*args, **kwargs):
-            if not getattr(g, "user_id", None):
-                return redirect("https://farreachco.com/login")
-            return f(*args, **kwargs)
+    def create_session_middleware(self):
+        async def session_middleware(request: Request, call_next):
+            cookie = request.cookies.get(SESSION_COOKIE_NAME)
+            if not cookie:
+                logger.info("[Session] No session cookie")
+                return await call_next(request)
 
-        return decorated
+            valid, session_id = self.verify_express_cookie(cookie, SESSION_SECRET)
+            if not valid:
+                logger.info("[Session] Invalid signature")
+                return await call_next(request)
+
+            try:
+                with psycopg2.connect(SESSION_DB_DSN) as conn:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            "SELECT sess FROM session WHERE sid = %s AND expire > NOW()",
+                            (session_id,),
+                        )
+                        row = cur.fetchone()
+                        if not row:
+                            logger.info("[Session] Session expired or not found")
+                            return await call_next(request)
+
+                        session_data = row[0]
+                        request.state.session_data = session_data
+                        request.state.user_id = session_data.get("user")
+            except Exception as e:
+                logger.warning(f"[Session] Error accessing DB: {e}")
+
+            return await call_next(request)
+
+        return session_middleware
 
     def verify_express_cookie(self, cookie_str: str, secret: str):
         def base64_to_base64url(s):
@@ -257,7 +278,9 @@ class RadioWebService:
         try:
             value, sig = cookie_str[2:].split(".", 1)
         except ValueError:
-            logger.warning("[VerifyCookie] Failed to split cookie into value and signature.")
+            logger.warning(
+                "[VerifyCookie] Failed to split cookie into value and signature."
+            )
             return False, None
 
         expected_sig = hmac.new(
@@ -275,58 +298,40 @@ class RadioWebService:
             logger.info("[VerifyCookie] Signature mismatch")
             return False, None
 
+    async def login_required(self, request: Request):
+        if not getattr(request.state, "user_id", None):
+            raise HTTPException(
+                status_code=307,
+                detail="Redirecting to login",
+                headers={"Location": "https://farreachco.com/login"},
+            )
+
     def _define_routes(self):
-        @self.app.before_request
-        def load_session():
-            cookie = request.cookies.get(SESSION_COOKIE_NAME)
-            if not cookie:
-                logger.info("[Session] No session cookie")
-                return
-
-            valid, session_id = self.verify_express_cookie(cookie, SESSION_SECRET)
-            if not valid:
-                logger.info("[Session] Invalid signature")
-                return
-
-            try:
-                with psycopg2.connect(SESSION_DB_DSN) as conn:
-                    with conn.cursor() as cur:
-                        cur.execute(
-                            "SELECT sess FROM session WHERE sid = %s AND expire > NOW()",
-                            (session_id,),
-                        )
-                        row = cur.fetchone()
-                        if not row:
-                            logger.info("[Session] Session expired or not found")
-                            return
-
-                        session_data = row[0]
-                        g.session_data = session_data
-                        g.user_id = session_data.get("user")
-            except Exception as e:
-                logger.warning("[Session] Error accessing DB:", e)
-
-        @self.app.route("/")
+        @self.app.get("/")
         def index():
-            return send_from_directory(".", "index.html")
+            return FileResponse("static/index.html")
 
-        @self.app.route("/listen")
-        def listen():
-            channel_name = request.args.get("channel")
+        @self.app.get("/listen")
+        def listen(request: Request):
+            channel_name = request.query_params.get("channel")
             if not channel_name:
                 return Response("Missing channel name", status=400)
 
             # auto-create listener page with dynamic JS if needed
-            return send_from_directory(".", "listener.html")
+            return FileResponse("static/listener.html")
 
-        @self.app.route("/host")
-        @self.login_required
-        def host():
-            return send_from_directory(".", "host.html")
+        @self.app.get("/host")
+        async def host(
+            request: Request,
+            _: None = Depends(self.login_required),
+        ):
+            return FileResponse("static/host.html")
 
-        @self.app.route("/playlists")
-        @self.login_required
-        def get_playlists():
+        @self.app.get("/playlists")
+        def get_playlists(
+            request: Request,
+            _: None = Depends(self.login_required),
+        ):
             try:
                 playlists = [
                     name
@@ -337,10 +342,12 @@ class RadioWebService:
             except Exception as e:
                 return {"error": str(e)}, 500
 
-        @self.app.route("/command", methods=["POST"])
-        @self.login_required
-        def command():
-            data = request.json
+        @self.app.post("/command")
+        async def command(
+            request: Request,
+            _: None = Depends(self.login_required),
+        ):
+            data = await request.json()
             cmd = data.get("command")
             channel_name = data.get("channel")
             playlist = data.get("playlist")
@@ -361,16 +368,17 @@ class RadioWebService:
             except Exception as e:
                 return {"error": str(e)}, 500
 
-        @self.app.route("/stream")
-        def stream():
-            channel_name = request.args.get("channel")
+        @self.app.get("/stream")
+        async def stream(request: Request):
+            channel_name = request.query_params.get("channel")
             if not channel_name:
-                return Response("Missing channel name", status=400)
+                return Response(content="Missing channel name", status_code=400)
+
             try:
                 channel = self._get_channel(channel_name)
                 playlist = channel.current_playlist
                 if not playlist or playlist not in self.streamers:
-                    return Response("Channel not active", status=400)
+                    return Response(content="Channel not active", status_code=400)
 
                 q = queue.Queue(maxsize=LISTENER_QUEUE_MAXSIZE)
                 self.streamers[playlist].add_listener(channel_name, q)
@@ -392,7 +400,6 @@ class RadioWebService:
                             yield chunk
                     finally:
                         self.streamers[playlist].remove_listener(channel_name, q)
-                        # Optional cleanup
                         if not self.streamers[playlist].listener_queues.get(
                             channel_name
                         ):
@@ -401,24 +408,19 @@ class RadioWebService:
                             )
                             del self.channels[channel_name]
 
-                return Response(
-                    stream_with_context(generate()),
-                    mimetype="audio/mpeg",
+                return StreamingResponse(
+                    generate(),
+                    media_type="audio/mpeg",
                     headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
                 )
+
             except Exception as e:
-                return Response(str(e), status=500)
+                logger.exception("[Stream] Unhandled exception")
+                return Response(content=str(e), status_code=500)
 
 
 # === Main Entrypoint ===
 if __name__ == "__main__":
     service = RadioWebService()
-    server = pywsgi.WSGIServer(
-        ("0.0.0.0", 5000),
-        service.app,
-    )
-    logger.info("📡 Gevent radio server running at http://localhost:5000")
-    try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        logger.info("\n[Main] Keyboard interrupt received. Exiting.")
+    logger.info("Server running at http://localhost:5000")
+    uvicorn.run(service.app, host="0.0.0.0", port=5000)
