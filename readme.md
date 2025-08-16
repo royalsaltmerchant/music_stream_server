@@ -30,7 +30,7 @@ Set the following values in `config.py` or via environment variables:
 
 ```python
 SESSION_SECRET = os.environ.get("SESSION_SECRET") or "your-signing-secret"
-SESSION_COOKIE_NAME = "frcsession"
+SESSION_COOKIE_NAME = "frc_session"
 SESSION_DB_DSN = "postgresql://user:pass@localhost:5432/your_db"
 
 MUSIC_BASE_DIR = "./music"
