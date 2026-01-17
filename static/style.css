@@ -70,6 +70,7 @@ p {
   color: var(--main-white);
 }
 
+#category-select,
 #playlist-select {
   display: block;
   margin: 10px auto 15px auto;
@@ -90,9 +91,15 @@ p {
   appearance: none;
 }
 
+#category-select:hover,
 #playlist-select:hover {
   color: var(--green);
   box-shadow: 0 0 10px var(--green2);
+}
+
+#playlist-select:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 button {

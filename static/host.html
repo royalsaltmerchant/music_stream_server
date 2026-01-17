@@ -29,8 +29,14 @@
     </div> -->
 
     <br />
-    <h4>Change Playlist:</h4>
-    <select id="playlist-select">
+    <h4>Select Music:</h4>
+    <label for="category-select">Category:</label>
+    <select id="category-select">
+      <option disabled selected>Select Category</option>
+    </select>
+    <br />
+    <label for="playlist-select">Playlist:</label>
+    <select id="playlist-select" disabled>
       <option disabled selected>Select Playlist</option>
     </select>
     <br />
@@ -41,6 +47,7 @@
     <script>
       const statusEl = document.getElementById("status");
       const playlistSelect = document.getElementById("playlist-select");
+      let categoriesData = {};
 
       const urlParams = new URLSearchParams(window.location.search);
       const CHANNEL = urlParams.get("channel");
@@ -72,18 +79,47 @@
           const res = await fetch("/playlists");
           const data = await res.json();
 
-          playlistSelect.innerHTML =
-            "<option disabled selected>Select Playlist</option>";
-          data.playlists.forEach((pl) => {
+          categoriesData = data.categories;
+
+          const categorySelect = document.getElementById("category-select");
+          categorySelect.innerHTML = "<option disabled selected>Select Category</option>";
+
+          Object.keys(categoriesData).sort().forEach((category) => {
             const option = document.createElement("option");
-            option.value = pl;
-            option.textContent = pl;
-            playlistSelect.appendChild(option);
+            option.value = category;
+            option.textContent = category;
+            categorySelect.appendChild(option);
           });
+
+          // Add change handler
+          categorySelect.addEventListener("change", onCategoryChange);
         } catch (err) {
           statusEl.textContent = "❌ Failed to fetch playlists.";
           console.error(err);
         }
+      }
+
+      function onCategoryChange() {
+        const categorySelect = document.getElementById("category-select");
+        const playlistSelect = document.getElementById("playlist-select");
+        const selectedCategory = categorySelect.value;
+
+        if (!selectedCategory) {
+          playlistSelect.disabled = true;
+          playlistSelect.innerHTML = "<option disabled selected>Select Playlist</option>";
+          return;
+        }
+
+        const playlists = categoriesData[selectedCategory] || [];
+        playlistSelect.innerHTML = "<option disabled selected>Select Playlist</option>";
+        playlists.forEach((pl) => {
+          const option = document.createElement("option");
+          option.value = pl;
+          option.textContent = pl;
+          playlistSelect.appendChild(option);
+        });
+
+        playlistSelect.disabled = false;
       }
 
       async function sendCommand(cmd) {
@@ -111,11 +147,17 @@
       async function changePlaylist() {
         if (!CHANNEL) return;
 
-        const selected = playlistSelect.value;
-        if (!selected) {
-          statusEl.textContent = "❌ No playlist selected.";
+        const categorySelect = document.getElementById("category-select");
+        const playlistSelect = document.getElementById("playlist-select");
+        const category = categorySelect.value;
+        const playlist = playlistSelect.value;
+
+        if (!category || !playlist) {
+          statusEl.textContent = "❌ No category or playlist selected.";
           return;
         }
+
+        const fullPlaylist = `${category}/${playlist}`;
 
         try {
           const res = await fetch("/command", {
@@ -123,13 +165,13 @@
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
               channel: CHANNEL,
-              playlist: selected,
+              playlist: fullPlaylist,
             }),
           });
 
           const data = await res.json();
           if (res.ok) {
-            statusEl.textContent = `✅ Channel "${data.channel}" now playing "${selected}"`;
+            statusEl.textContent = `✅ Channel "${data.channel}" now playing "${category}/${playlist}"`;
           } else {
             statusEl.textContent = `❌ ${data.error}`;
           }

@@ -1,6 +1,6 @@
 # Music Streaming Server | Far Reach Co.
 
-A simple music streaming server built with FastAPI, FFmpeg, and PostgreSQL-backed sessions. Streams audio files from playlists and allows authenticated users to control playback (play, switch playlists).
+A simple music streaming server built with FastAPI, FFmpeg, and PostgreSQL-backed sessions. Streams audio files from categorized playlists and allows authenticated users to control playback (play, switch playlists). Music is organized into categories (e.g., "strahd", "ambient") with playlists nested within each category.
 
 ---
 
@@ -33,12 +33,37 @@ SESSION_SECRET = os.environ.get("SESSION_SECRET") or "your-signing-secret"
 SESSION_COOKIE_NAME = "frc_session"
 SESSION_DB_DSN = "postgresql://user:pass@localhost:5432/your_db"
 
-MUSIC_BASE_DIR = "./music"
+MUSIC_BASE_DIR = "music"  # Base directory containing category folders
 
 CHUNK_SIZE = 4096
 LISTENER_QUEUE_MAXSIZE = 5
 SILENT_BUFFER = b"\0" * CHUNK_SIZE
 ```
+
+---
+
+## Directory Structure
+
+Music files should be organized into a two-level hierarchy: categories and playlists.
+
+```
+music/
+├── strahd/              # Category 1
+│   ├── combat/          # Playlist 1
+│   │   ├── track1.mp3
+│   │   └── track2.mp3
+│   ├── Church/          # Playlist 2
+│   │   └── hymn.mp3
+│   └── Town/            # Playlist 3
+│       └── ambient.mp3
+└── ambient/             # Category 2
+    ├── nature/          # Playlist 4
+    │   └── forest.mp3
+    └── tavern/          # Playlist 5
+        └── chatter.mp3
+```
+
+**Supported audio formats:** `.mp3`, `.wav`, `.ogg`, `.flac`
 
 ---
 
@@ -88,22 +113,38 @@ Returns the main landing page (`index.html`).
 ### `GET /listen?channel=some_channel`
 Returns the listener interface.
 
-### `GET /host`
-Requires login. Shows host controls.
+### `GET /host?channel=some_channel`
+Requires login. Shows host controls for managing the specified channel.
 
-### `POST /command`
-JSON body:
+### `GET /playlists`
+Requires login. Returns available categories and their playlists.
+
+Response format:
 ```json
 {
-  "channel": "my_channel",
-  "command": "next" // or "stop"
+  "categories": {
+    "strahd": ["Argynvostholt", "Church", "combat", "Town"],
+    "ambient": ["nature", "tavern"]
+  }
 }
 ```
-Or:
+
+### `POST /command`
+Requires login. Controls playback or switches playlists.
+
+Send a command (next/stop):
 ```json
 {
   "channel": "my_channel",
-  "playlist": "folder_name"
+  "command": "next"
+}
+```
+
+Or switch to a playlist (format: `category/playlist`):
+```json
+{
+  "channel": "my_channel",
+  "playlist": "strahd/combat"
 }
 ```
 
@@ -114,6 +155,8 @@ Streams MP3 audio for that channel.
 
 ## Notes
 
-- The server only streams `.mp3`, `.wav`, `.ogg`, `.flac` files.
-- You must have `ffmpeg` installed and accessible from the command line.
-- Long-lived background threads will terminate if no listeners connect for `IDLE_TIMEOUT` seconds (default 600).
+- Music must be organized in a two-level directory structure: `category/playlist/`
+- The server only streams `.mp3`, `.wav`, `.ogg`, `.flac` files
+- You must have `ffmpeg` installed and accessible from the command line
+- Empty categories (categories with no playlists) are automatically filtered from the API
+- Long-lived background threads will terminate if no listeners connect for `IDLE_TIMEOUT` seconds (default 600)

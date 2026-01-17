@@ -3,11 +3,12 @@ import hashlib
 import hmac
 import queue
 import os
+import re
 import time
 import random
 import threading
 import subprocess
-import urllib
+import urllib.parse
 import logging
 import psycopg2
 import uvicorn
@@ -21,11 +22,15 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from config import (
     CHUNK_SIZE,
     LISTENER_QUEUE_MAXSIZE,
+    IDLE_TIMEOUT,
     SILENT_BUFFER,
     SESSION_COOKIE_NAME,
     SESSION_SECRET,
     SESSION_DB_DSN,
     MUSIC_BASE_DIR,
+    HOST,
+    PORT,
+    LOGIN_URL,
 )
 
 logging.basicConfig(
@@ -36,11 +41,10 @@ logger = logging.getLogger("radio")
 
 # === AudioStreamer ===
 class AudioStreamer:
-    IDLE_TIMEOUT = 600
-
     def __init__(self, playlist_path: str):
         self.playlist_path = playlist_path
         self.listener_queues = {}  # key: channel_name, value: set of queues
+        self.listener_queues_lock = threading.Lock()
         self.command_queue = queue.Queue()
         self.thread = threading.Thread(target=self._run, daemon=True)
 
@@ -49,15 +53,17 @@ class AudioStreamer:
             self.thread.start()
 
     def add_listener(self, channel_name, q):
-        if channel_name not in self.listener_queues:
-            self.listener_queues[channel_name] = set()
-        self.listener_queues[channel_name].add(q)
+        with self.listener_queues_lock:
+            if channel_name not in self.listener_queues:
+                self.listener_queues[channel_name] = set()
+            self.listener_queues[channel_name].add(q)
 
     def remove_listener(self, channel_name, q):
-        if channel_name in self.listener_queues:
-            self.listener_queues[channel_name].discard(q)
-            if not self.listener_queues[channel_name]:
-                del self.listener_queues[channel_name]
+        with self.listener_queues_lock:
+            if channel_name in self.listener_queues:
+                self.listener_queues[channel_name].discard(q)
+                if not self.listener_queues[channel_name]:
+                    del self.listener_queues[channel_name]
 
     def put_command(self, cmd: str):
         self.command_queue.put(cmd)
@@ -89,74 +95,80 @@ class AudioStreamer:
                 track_path = os.path.join(self.playlist_path, track)
                 logger.info(f"🎶 Now playing: {track}")
 
-                proc = subprocess.Popen(
-                    [
-                        "ffmpeg",
-                        "-hide_banner",
-                        "-loglevel",
-                        "quiet",
-                        "-re",
-                        "-i",
-                        track_path,
-                        "-vn",
-                        "-acodec",
-                        "libmp3lame",
-                        "-ar",
-                        "44100",
-                        "-b:a",
-                        "128k",
-                        "-f",
-                        "mp3",
-                        "-",
-                    ],
-                    stdout=subprocess.PIPE,
-                )
+                try:
+                    proc = subprocess.Popen(
+                        [
+                            "ffmpeg",
+                            "-hide_banner",
+                            "-loglevel",
+                            "quiet",
+                            "-re",
+                            "-i",
+                            track_path,
+                            "-vn",
+                            "-acodec",
+                            "libmp3lame",
+                            "-ar",
+                            "44100",
+                            "-b:a",
+                            "128k",
+                            "-f",
+                            "mp3",
+                            "-",
+                        ],
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                    )
+                except FileNotFoundError:
+                    logger.error("FFmpeg not found in PATH")
+                    time.sleep(5)
+                    continue
+                except Exception as e:
+                    logger.error(f"Failed to start FFmpeg: {e}")
+                    time.sleep(5)
+                    continue
 
-                while True:
-                    try:
-                        cmd = self.command_queue.get_nowait()
-                        if cmd == "stop":
-                            proc.kill()
-                            logger.info("[Streamer] Stopped.")
-                            return
-                        elif cmd == "next":
-                            logger.info("[Streamer] Skipping track.")
-                            proc.kill()
-                            break
-                        elif cmd.startswith("change"):
-                            new_dir = cmd[len("change") :].strip()
-                            if os.path.isdir(new_dir):
-                                logger.info(
-                                    f"[Streamer] Changing directory to: {new_dir}"
-                                )
-                                self.playlist_path = new_dir
-                                proc.kill()
+                try:
+                    while True:
+                        try:
+                            cmd = self.command_queue.get_nowait()
+                            if cmd == "stop":
+                                logger.info("[Streamer] Stopped.")
+                                return
+                            elif cmd == "next":
+                                logger.info("[Streamer] Skipping track.")
                                 break
-                    except queue.Empty:
-                        pass
+                            # Removed "change" command - playlist changes handled via Channel.play_playlist()
+                        except queue.Empty:
+                            pass
 
-                    chunk = proc.stdout.read(CHUNK_SIZE)
-                    if chunk:
-                        if any(self.listener_queues.values()):
-                            last_listener_time = time.time()
-                        for listeners in self.listener_queues.values():
-                            for q in listeners:
-                                try:
-                                    q.put_nowait(chunk)
-                                except queue.Full:
-                                    pass
-                    else:
-                        logger.info("[Streamer] End of track reached.")
-                        break
+                        chunk = proc.stdout.read(CHUNK_SIZE)
+                        if chunk:
+                            with self.listener_queues_lock:
+                                if any(self.listener_queues.values()):
+                                    last_listener_time = time.time()
+                                for listeners in list(self.listener_queues.values()):
+                                    for q in listeners:
+                                        try:
+                                            q.put_nowait(chunk)
+                                        except queue.Full:
+                                            pass
+                        else:
+                            logger.info("[Streamer] End of track reached.")
+                            break
 
-                    if time.time() - last_listener_time > self.IDLE_TIMEOUT:
-                        logger.info(
-                            f"[Streamer] No listeners for {self.IDLE_TIMEOUT} seconds. Exiting."
-                        )
+                        if time.time() - last_listener_time > IDLE_TIMEOUT:
+                            logger.info(
+                                f"[Streamer] No listeners for {IDLE_TIMEOUT} seconds. Exiting."
+                            )
+                            return
+                finally:
+                    # Ensure FFmpeg process is properly cleaned up
+                    if proc.poll() is None:
                         proc.kill()
-                        return
-
-                proc.kill()
+                    if proc.stdout:
+                        proc.stdout.close()
+                    proc.wait()
 
 
 # === Channel ===
@@ -189,23 +201,6 @@ class Channel:
                     old_streamer.remove_listener(self.name, q)
                     new_streamer.add_listener(self.name, q)
 
-        old_playlist = self.current_playlist
-        self.current_playlist = playlist_path
-
-        if playlist_path not in streamers:
-            streamer = AudioStreamer(playlist_path=playlist_path)
-            streamers[playlist_path] = streamer
-            streamer.start()
-
-        if old_playlist and old_playlist in streamers:
-            old_streamer = streamers[old_playlist]
-            new_streamer = streamers[playlist_path]
-
-            if self.name in old_streamer.listener_queues:
-                for q in list(old_streamer.listener_queues[self.name]):
-                    old_streamer.remove_listener(self.name, q)
-                    new_streamer.add_listener(self.name, q)
-
     def send_command(self, cmd: str, streamers: dict):
         if self.current_playlist and self.current_playlist in streamers:
             streamers[self.current_playlist].put_command(cmd)
@@ -213,6 +208,8 @@ class Channel:
 
 # === Radio Web Service ===
 class RadioWebService:
+    MAX_CHANNEL_NAME_LENGTH = 256
+
     def __init__(self):
         self.app = FastAPI()
         self.channels = {}
@@ -222,6 +219,21 @@ class RadioWebService:
         )
         self.app.mount("/static", StaticFiles(directory="static"), name="static")
         self._define_routes()
+
+    def _validate_channel_name(self, name: str) -> tuple[bool, str]:
+        """Validate channel name format and length."""
+        if not name or not isinstance(name, str):
+            return False, "Channel name required"
+
+        name = name.strip()
+        if len(name) > self.MAX_CHANNEL_NAME_LENGTH:
+            return False, "Channel name too long"
+
+        # Whitelist allowed characters
+        if not re.match(r'^[a-zA-Z0-9_-]+$', name):
+            return False, "Channel name contains invalid characters"
+
+        return True, name
 
     def _get_channel(self, name: str) -> Channel:
         if name not in self.channels:
@@ -256,8 +268,12 @@ class RadioWebService:
                         session_data = row[0]
                         request.state.session_data = session_data
                         request.state.user_id = session_data.get("user")
+            except psycopg2.OperationalError as e:
+                logger.warning(f"[Session] DB connection error: {e}")
+            except psycopg2.ProgrammingError as e:
+                logger.error(f"[Session] DB query error: {e}")
             except Exception as e:
-                logger.warning(f"[Session] Error accessing DB: {e}")
+                logger.error(f"[Session] Unexpected error: {e}", exc_info=True)
 
             return await call_next(request)
 
@@ -269,9 +285,9 @@ class RadioWebService:
 
         cookie_str = urllib.parse.unquote(cookie_str)
 
-        if not cookie_str.startswith("s:"):
+        if not cookie_str.startswith("s:") or len(cookie_str) < 3:
             logger.warning(
-                "[VerifyCookie] Cookie does not start with 's:', skipping verification."
+                "[VerifyCookie] Invalid cookie format"
             )
             return False, None
 
@@ -303,7 +319,7 @@ class RadioWebService:
             raise HTTPException(
                 status_code=307,
                 detail="Redirecting to login",
-                headers={"Location": "https://farreachco.com/login"},
+                headers={"Location": LOGIN_URL},
             )
 
     def _define_routes(self):
@@ -313,9 +329,10 @@ class RadioWebService:
 
         @self.app.get("/listen")
         def listen(request: Request):
-            channel_name = request.query_params.get("channel")
-            if not channel_name:
-                return Response("Missing channel name", status=400)
+            channel_name = request.query_params.get("channel", "").strip()
+            valid, result = self._validate_channel_name(channel_name)
+            if not valid:
+                return Response(result, status_code=400)
 
             # auto-create listener page with dynamic JS if needed
             return FileResponse("static/listener.html")
@@ -333,12 +350,18 @@ class RadioWebService:
             _: None = Depends(self.login_required),
         ):
             try:
-                playlists = [
-                    name
-                    for name in os.listdir(MUSIC_BASE_DIR)
-                    if os.path.isdir(os.path.join(MUSIC_BASE_DIR, name))
-                ]
-                return {"playlists": playlists}
+                categories = {}
+                for category_name in os.listdir(MUSIC_BASE_DIR):
+                    category_path = os.path.join(MUSIC_BASE_DIR, category_name)
+                    if os.path.isdir(category_path):
+                        playlists = [
+                            name
+                            for name in os.listdir(category_path)
+                            if os.path.isdir(os.path.join(category_path, name))
+                        ]
+                        if playlists:  # Only include categories with playlists
+                            categories[category_name] = sorted(playlists)
+                return {"categories": categories}
             except Exception as e:
                 return {"error": str(e)}, 500
 
@@ -347,33 +370,57 @@ class RadioWebService:
             request: Request,
             _: None = Depends(self.login_required),
         ):
-            data = await request.json()
+            try:
+                data = await request.json()
+            except Exception as e:
+                logger.warning(f"[Command] Invalid JSON: {e}")
+                return {"error": "Invalid JSON"}, 400
+
+            if not isinstance(data, dict):
+                return {"error": "Expected JSON object"}, 400
+
             cmd = data.get("command")
-            channel_name = data.get("channel")
+            channel_name = data.get("channel", "")
             playlist = data.get("playlist")
-            if not channel_name:
-                return {"error": "Missing channel name"}, 400
+
+            valid, result = self._validate_channel_name(channel_name)
+            if not valid:
+                return {"error": result}, 400
+
+            channel_name = result  # Use validated/normalized name
             try:
                 channel = self._get_channel(channel_name)
                 if playlist:
+                    # Validate path to prevent directory traversal
                     path = os.path.join(MUSIC_BASE_DIR, playlist)
-                    if not os.path.isdir(path):
-                        return {"error": f"Invalid playlist path: {path}"}, 400
-                    channel.play_playlist(path, self.streamers)
+                    real_music_dir = os.path.realpath(MUSIC_BASE_DIR)
+                    real_requested_path = os.path.realpath(path)
+
+                    if not real_requested_path.startswith(real_music_dir):
+                        logger.warning(f"[Command] Path traversal attempt: {playlist}")
+                        return {"error": "Invalid playlist path"}, 400
+
+                    if not os.path.isdir(real_requested_path):
+                        return {"error": "Invalid playlist path"}, 400
+
+                    channel.play_playlist(real_requested_path, self.streamers)
                 elif cmd:
                     channel.send_command(cmd, self.streamers)
                 else:
                     return {"error": "Missing command or playlist"}, 400
                 return {"status": "ok", "channel": channel_name}
             except Exception as e:
+                logger.error(f"[Command] Error: {e}")
                 return {"error": str(e)}, 500
 
         @self.app.get("/stream")
         async def stream(request: Request):
-            channel_name = request.query_params.get("channel")
-            if not channel_name:
-                return Response(content="Missing channel name", status_code=400)
+            channel_name = request.query_params.get("channel", "").strip()
+            valid, result = self._validate_channel_name(channel_name)
+            if not valid:
+                return Response(content=result, status_code=400)
 
+            channel_name = result  # Use validated/normalized name
             try:
                 channel = self._get_channel(channel_name)
                 playlist = channel.current_playlist
@@ -422,5 +469,5 @@ class RadioWebService:
 # === Main Entrypoint ===
 if __name__ == "__main__":
     service = RadioWebService()
-    logger.info("Server running at http://localhost:5000")
-    uvicorn.run(service.app, host="0.0.0.0", port=5000)
+    logger.info(f"Server running at http://{HOST}:{PORT}")
+    uvicorn.run(service.app, host=HOST, port=PORT)
