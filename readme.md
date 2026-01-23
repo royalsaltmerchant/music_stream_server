@@ -1,6 +1,6 @@
 # Music Streaming Server | Far Reach Co.
 
-A simple music streaming server built with FastAPI, FFmpeg, and PostgreSQL-backed sessions. Streams audio files from categorized playlists and allows authenticated users to control playback (play, switch playlists). Music is organized into categories (e.g., "strahd", "ambient") with playlists nested within each category.
+A music streaming server built with FastAPI, FFmpeg, and PostgreSQL-backed sessions. Streams audio files from S3/CloudFront using signed URLs and allows authenticated users to control playback. Tracks are registered via CSV and organized into named playlists.
 
 ---
 
@@ -8,6 +8,8 @@ A simple music streaming server built with FastAPI, FFmpeg, and PostgreSQL-backe
 
 - Python 3.10+
 - FFmpeg installed and available in `$PATH`
+- AWS S3 bucket with CloudFront distribution
+- CloudFront key pair for signed URLs
 
 ---
 
@@ -26,44 +28,88 @@ pip install -r requirements.txt
 
 ## Config
 
-Set the following values in `config.py` or via environment variables:
+Set the following environment variables (or in `.env` file):
 
-```python
-SESSION_SECRET = os.environ.get("SESSION_SECRET") or "your-signing-secret"
-SESSION_COOKIE_NAME = "frc_session"
-SESSION_DB_DSN = "postgresql://user:pass@localhost:5432/your_db"
+### Required
 
-MUSIC_BASE_DIR = "music"  # Base directory containing category folders
+```bash
+# Session/Auth
+SESSION_SECRET=your-signing-secret
+PG_DB=your_database
+PG_USER=your_user
+PG_PW=your_password
+PG_HOST=localhost
 
-CHUNK_SIZE = 4096
-LISTENER_QUEUE_MAXSIZE = 5
-SILENT_BUFFER = b"\0" * CHUNK_SIZE
+# CloudFront
+CLOUDFRONT_DOMAIN=d1234567890.cloudfront.net
+CLOUDFRONT_KEY_ID=KXXXXXXXXXXXXXXX
+CLOUDFRONT_PRIVATE_KEY_PATH=./private_frc_cloudfront_key.pem
+```
+
+### Optional
+
+```bash
+TRACKS_CSV_PATH=tracks.csv          # Default: tracks.csv
+SESSION_COOKIE_NAME=frc_session     # Default: frc_session
+HOST=0.0.0.0                        # Default: 0.0.0.0
+PORT=5000                           # Default: 5000
+CHUNK_SIZE=1024                     # Default: 1024
+LISTENER_QUEUE_MAXSIZE=256          # Default: 256
+IDLE_TIMEOUT=600                    # Default: 600 (seconds)
+LOGIN_URL=https://example.com/login # Redirect URL for unauthenticated users
 ```
 
 ---
 
-## Directory Structure
+## Track Registry (CSV)
 
-Music files should be organized into a two-level hierarchy: categories and playlists.
+Tracks are registered in a CSV file with the following headers:
 
 ```
-music/
-├── strahd/              # Category 1
-│   ├── combat/          # Playlist 1
-│   │   ├── track1.mp3
-│   │   └── track2.mp3
-│   ├── Church/          # Playlist 2
-│   │   └── hymn.mp3
-│   └── Town/            # Playlist 3
-│       └── ambient.mp3
-└── ambient/             # Category 2
-    ├── nature/          # Playlist 4
-    │   └── forest.mp3
-    └── tavern/          # Playlist 5
-        └── chatter.mp3
+Track Name,File Name,KEY TITLE,Track Number,Album,Psudo-Tags,Previous Titles
 ```
 
-**Supported audio formats:** `.mp3`, `.wav`, `.ogg`, `.flac`
+Example row:
+```
+Haunting Tavern,haunting_tavern_remst_fullmix.mp3,HAUNTING_TAVERN_REMST_FULLMIX,1,Secrets of Strahd Original Soundtrack,"peaceful, town, village, horror, sos",
+```
+
+- **KEY TITLE**: Unique identifier used in playlist definitions
+- **File Name**: Filename in S3 (stored at `s3://bucket/audio/{filename}`)
+
+---
+
+## Playlist Definitions
+
+Playlists are defined in `playlists.py`:
+
+```python
+PLAYLISTS = {
+    "tavern_ambience": ["HAUNTING_TAVERN_REMST_FULLMIX", "TAVERN_BUSTLE"],
+    "combat_epic": ["BATTLE_EPIC1", "BATTLE_EPIC2"],
+}
+```
+
+Each playlist maps to a list of track keys from the CSV.
+
+---
+
+## S3/CloudFront Setup
+
+Audio files should be stored in S3 with the path prefix `/audio/`:
+
+```
+s3://your-bucket/
+└── audio/
+    ├── haunting_tavern_remst_fullmix.mp3
+    ├── battle_epic_01.mp3
+    └── ...
+```
+
+CloudFront should be configured with:
+- Origin pointing to your S3 bucket
+- Signed URL requirement (restricted viewer access)
+- Key pair for signing (private key stored locally)
 
 ---
 
@@ -117,15 +163,12 @@ Returns the listener interface.
 Requires login. Shows host controls for managing the specified channel.
 
 ### `GET /playlists`
-Requires login. Returns available categories and their playlists.
+Requires login. Returns available playlist names.
 
 Response format:
 ```json
 {
-  "categories": {
-    "strahd": ["Argynvostholt", "Church", "combat", "Town"],
-    "ambient": ["nature", "tavern"]
-  }
+  "playlists": ["tavern_ambience", "combat_epic", "exploration"]
 }
 ```
 
@@ -140,11 +183,11 @@ Send a command (next/stop):
 }
 ```
 
-Or switch to a playlist (format: `category/playlist`):
+Or switch to a playlist by name:
 ```json
 {
   "channel": "my_channel",
-  "playlist": "strahd/combat"
+  "playlist": "tavern_ambience"
 }
 ```
 
@@ -155,8 +198,8 @@ Streams MP3 audio for that channel.
 
 ## Notes
 
-- Music must be organized in a two-level directory structure: `category/playlist/`
-- The server only streams `.mp3`, `.wav`, `.ogg`, `.flac` files
+- Audio files are streamed from CloudFront via signed URLs (3-day expiry)
+- FFmpeg reads directly from the signed URL and transcodes to MP3
+- The server streams `.mp3`, `.wav`, `.ogg`, `.flac` files (any format FFmpeg supports)
 - You must have `ffmpeg` installed and accessible from the command line
-- Empty categories (categories with no playlists) are automatically filtered from the API
-- Long-lived background threads will terminate if no listeners connect for `IDLE_TIMEOUT` seconds (default 600)
+- Background streamer threads terminate if no listeners connect for `IDLE_TIMEOUT` seconds (default 600)
