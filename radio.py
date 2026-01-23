@@ -147,6 +147,7 @@ class AudioStreamer:
                         except queue.Empty:
                             pass
 
+                        assert proc.stdout is not None
                         chunk = proc.stdout.read(CHUNK_SIZE)
                         if chunk:
                             with self.listener_queues_lock:

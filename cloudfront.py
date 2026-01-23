@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 from botocore.signers import CloudFrontSigner
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import padding
+from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey
 from cryptography.hazmat.primitives.serialization import load_pem_private_key
 
 from config import CLOUDFRONT_DOMAIN, CLOUDFRONT_KEY_ID, CLOUDFRONT_PRIVATE_KEY_PATH
@@ -26,6 +27,7 @@ def _get_private_key():
 def _rsa_signer(message: bytes) -> bytes:
     """RSA signer function for CloudFrontSigner."""
     key = _get_private_key()
+    assert isinstance(key, RSAPrivateKey)
     return key.sign(message, padding.PKCS1v15(), hashes.SHA1())
 
 
