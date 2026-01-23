@@ -11,6 +11,14 @@ IDLE_TIMEOUT = int(os.getenv("IDLE_TIMEOUT", "600"))
 SILENCE_PATH = os.getenv("SILENCE_PATH", "silence.mp3")
 MUSIC_BASE_DIR = os.getenv("MUSIC_BASE_DIR", "music")
 
+# Track registry
+TRACKS_CSV_PATH = os.getenv("TRACKS_CSV_PATH", "tracks.csv")
+
+# CloudFront configuration
+CLOUDFRONT_DOMAIN = os.getenv("CLOUDFRONT_DOMAIN") or exit("CLOUDFRONT_DOMAIN is required")
+CLOUDFRONT_KEY_ID = os.getenv("CLOUDFRONT_KEY_ID") or exit("CLOUDFRONT_KEY_ID is required")
+CLOUDFRONT_PRIVATE_KEY_PATH = os.getenv("CLOUDFRONT_PRIVATE_KEY_PATH") or exit("CLOUDFRONT_PRIVATE_KEY_PATH is required")
+
 # Server configuration
 HOST = os.getenv("HOST", "0.0.0.0")
 PORT = int(os.getenv("PORT", "5000"))

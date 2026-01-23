@@ -27,11 +27,13 @@ from config import (
     SESSION_COOKIE_NAME,
     SESSION_SECRET,
     SESSION_DB_DSN,
-    MUSIC_BASE_DIR,
     HOST,
     PORT,
     LOGIN_URL,
 )
+from tracks import get_track_filename
+from playlists import get_playlist, get_all_playlists
+from cloudfront import get_signed_url
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s - %(message)s"
@@ -41,8 +43,8 @@ logger = logging.getLogger("radio")
 
 # === AudioStreamer ===
 class AudioStreamer:
-    def __init__(self, playlist_path: str):
-        self.playlist_path = playlist_path
+    def __init__(self, playlist_name: str):
+        self.playlist_name = playlist_name
         self.listener_queues = {}  # key: channel_name, value: set of queues
         self.listener_queues_lock = threading.Lock()
         self.command_queue = queue.Queue()
@@ -71,29 +73,32 @@ class AudioStreamer:
     def _run(self):
         last_listener_time = time.time()
         while True:
-            if not os.path.exists(self.playlist_path):
-                logger.warning(f"[!] Folder '{self.playlist_path}' not found.")
+            track_keys = get_playlist(self.playlist_name)
+            if not track_keys:
+                logger.warning(f"[!] Playlist '{self.playlist_name}' not found or empty.")
                 time.sleep(5)
                 continue
 
-            playlist = sorted(
-                [
-                    f
-                    for f in os.listdir(self.playlist_path)
-                    if f.lower().endswith((".mp3", ".wav", ".ogg", ".flac"))
-                ]
-            )
+            # Resolve track keys to filenames, skip any that don't exist
+            tracks = []
+            for key in track_keys:
+                filename = get_track_filename(key)
+                if filename:
+                    tracks.append((key, filename))
+                else:
+                    logger.warning(f"[!] Track key '{key}' not found in registry.")
 
-            if not playlist:
-                logger.warning("[!] No audio files found. Waiting...")
+            if not tracks:
+                logger.warning("[!] No valid tracks found. Waiting...")
                 time.sleep(5)
                 continue
 
-            random.shuffle(playlist)
+            random.shuffle(tracks)
 
-            for track in playlist:
-                track_path = os.path.join(self.playlist_path, track)
-                logger.info(f"🎶 Now playing: {track}")
+            for track_key, track_filename in tracks:
+                # Generate signed CloudFront URL for this track
+                track_url = get_signed_url(track_filename)
+                logger.info(f"Now playing: {track_key} ({track_filename})")
 
                 try:
                     proc = subprocess.Popen(
@@ -104,7 +109,7 @@ class AudioStreamer:
                             "quiet",
                             "-re",
                             "-i",
-                            track_path,
+                            track_url,
                             "-vn",
                             "-acodec",
                             "libmp3lame",
@@ -177,24 +182,24 @@ class Channel:
         self.name = name
         self.current_playlist = None
 
-    def play_playlist(self, playlist_path: str, streamers: dict):
-        if self.current_playlist == playlist_path:
+    def play_playlist(self, playlist_name: str, streamers: dict):
+        if self.current_playlist == playlist_name:
             return
 
         old_playlist = self.current_playlist
-        self.current_playlist = playlist_path
+        self.current_playlist = playlist_name
 
         if (
-            playlist_path not in streamers
-            or not streamers[playlist_path].thread.is_alive()
+            playlist_name not in streamers
+            or not streamers[playlist_name].thread.is_alive()
         ):
-            streamer = AudioStreamer(playlist_path=playlist_path)
-            streamers[playlist_path] = streamer
+            streamer = AudioStreamer(playlist_name=playlist_name)
+            streamers[playlist_name] = streamer
             streamer.start()
 
         if old_playlist and old_playlist in streamers:
             old_streamer = streamers[old_playlist]
-            new_streamer = streamers[playlist_path]
+            new_streamer = streamers[playlist_name]
 
             if self.name in old_streamer.listener_queues:
                 for q in list(old_streamer.listener_queues[self.name]):
@@ -345,25 +350,11 @@ class RadioWebService:
             return FileResponse("static/host.html")
 
         @self.app.get("/playlists")
-        def get_playlists(
+        def get_playlists_route(
             request: Request,
             _: None = Depends(self.login_required),
         ):
-            try:
-                categories = {}
-                for category_name in os.listdir(MUSIC_BASE_DIR):
-                    category_path = os.path.join(MUSIC_BASE_DIR, category_name)
-                    if os.path.isdir(category_path):
-                        playlists = [
-                            name
-                            for name in os.listdir(category_path)
-                            if os.path.isdir(os.path.join(category_path, name))
-                        ]
-                        if playlists:  # Only include categories with playlists
-                            categories[category_name] = sorted(playlists)
-                return {"categories": categories}
-            except Exception as e:
-                return {"error": str(e)}, 500
+            return {"playlists": get_all_playlists()}
 
         @self.app.post("/command")
         async def command(
@@ -381,7 +372,7 @@ class RadioWebService:
 
             cmd = data.get("command")
             channel_name = data.get("channel", "")
-            playlist = data.get("playlist")
+            playlist_name = data.get("playlist")
 
             valid, result = self._validate_channel_name(channel_name)
             if not valid:
@@ -390,20 +381,12 @@ class RadioWebService:
             channel_name = result  # Use validated/normalized name
             try:
                 channel = self._get_channel(channel_name)
-                if playlist:
-                    # Validate path to prevent directory traversal
-                    path = os.path.join(MUSIC_BASE_DIR, playlist)
-                    real_music_dir = os.path.realpath(MUSIC_BASE_DIR)
-                    real_requested_path = os.path.realpath(path)
+                if playlist_name:
+                    # Validate playlist exists
+                    if get_playlist(playlist_name) is None:
+                        return {"error": "Playlist not found"}, 400
 
-                    if not real_requested_path.startswith(real_music_dir):
-                        logger.warning(f"[Command] Path traversal attempt: {playlist}")
-                        return {"error": "Invalid playlist path"}, 400
-
-                    if not os.path.isdir(real_requested_path):
-                        return {"error": "Invalid playlist path"}, 400
-
-                    channel.play_playlist(real_requested_path, self.streamers)
+                    channel.play_playlist(playlist_name, self.streamers)
                 elif cmd:
                     channel.send_command(cmd, self.streamers)
                 else:
