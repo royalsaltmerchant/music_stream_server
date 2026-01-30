@@ -4,6 +4,7 @@ import hmac
 import queue
 import os
 import re
+import signal
 import time
 import random
 import threading
@@ -31,7 +32,7 @@ from config import (
     PORT,
     LOGIN_URL,
 )
-from tracks import get_track_filename
+from tracks import get_track_filename, reload_tracks
 from playlists import get_playlist, get_all_playlists
 from cloudfront import get_signed_url
 
@@ -39,6 +40,7 @@ logging.basicConfig(
     level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s - %(message)s"
 )
 logger = logging.getLogger("radio")
+logger.level = logging.INFO
 
 
 # === AudioStreamer ===
@@ -448,6 +450,16 @@ class RadioWebService:
             except Exception as e:
                 logger.exception("[Stream] Unhandled exception")
                 return Response(content=str(e), status_code=500)
+
+
+# === Signal Handler for Track Reload ===
+def _handle_sighup(signum, frame):
+    """Handle SIGHUP to reload tracks from source."""
+    logger.info("[Signal] Received SIGHUP, reloading tracks...")
+    reload_tracks()
+
+
+signal.signal(signal.SIGHUP, _handle_sighup)
 
 
 # === Main Entrypoint ===
