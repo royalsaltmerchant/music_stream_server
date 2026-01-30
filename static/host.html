@@ -30,13 +30,8 @@
 
     <br />
     <h4>Select Music:</h4>
-    <label for="category-select">Category:</label>
-    <select id="category-select">
-      <option disabled selected>Select Category</option>
-    </select>
-    <br />
     <label for="playlist-select">Playlist:</label>
-    <select id="playlist-select" disabled>
+    <select id="playlist-select">
       <option disabled selected>Select Playlist</option>
     </select>
     <br />
@@ -47,11 +42,9 @@
     <script>
       const statusEl = document.getElementById("status");
       const playlistSelect = document.getElementById("playlist-select");
-      let categoriesData = {};
 
       const urlParams = new URLSearchParams(window.location.search);
       const CHANNEL = urlParams.get("channel");
-      // document.getElementById("channel-name").textContent = CHANNEL || "(none)";
 
       if (!CHANNEL) {
         alert(
@@ -79,47 +72,18 @@
           const res = await fetch("/playlists");
           const data = await res.json();
 
-          categoriesData = data.categories;
+          playlistSelect.innerHTML = "<option disabled selected>Select Playlist</option>";
 
-          const categorySelect = document.getElementById("category-select");
-          categorySelect.innerHTML = "<option disabled selected>Select Category</option>";
-
-          Object.keys(categoriesData).sort().forEach((category) => {
+          data.playlists.sort().forEach((playlist) => {
             const option = document.createElement("option");
-            option.value = category;
-            option.textContent = category;
-            categorySelect.appendChild(option);
+            option.value = playlist;
+            option.textContent = playlist;
+            playlistSelect.appendChild(option);
           });
-
-          // Add change handler
-          categorySelect.addEventListener("change", onCategoryChange);
         } catch (err) {
           statusEl.textContent = "❌ Failed to fetch playlists.";
           console.error(err);
         }
-      }
-
-      function onCategoryChange() {
-        const categorySelect = document.getElementById("category-select");
-        const playlistSelect = document.getElementById("playlist-select");
-        const selectedCategory = categorySelect.value;
-
-        if (!selectedCategory) {
-          playlistSelect.disabled = true;
-          playlistSelect.innerHTML = "<option disabled selected>Select Playlist</option>";
-          return;
-        }
-
-        const playlists = categoriesData[selectedCategory] || [];
-        playlistSelect.innerHTML = "<option disabled selected>Select Playlist</option>";
-        playlists.forEach((pl) => {
-          const option = document.createElement("option");
-          option.value = pl;
-          option.textContent = pl;
-          playlistSelect.appendChild(option);
-        });
-
-        playlistSelect.disabled = false;
       }
 
       async function sendCommand(cmd) {
@@ -147,17 +111,12 @@
       async function changePlaylist() {
         if (!CHANNEL) return;
 
-        const categorySelect = document.getElementById("category-select");
-        const playlistSelect = document.getElementById("playlist-select");
-        const category = categorySelect.value;
         const playlist = playlistSelect.value;
 
-        if (!category || !playlist) {
-          statusEl.textContent = "❌ No category or playlist selected.";
+        if (!playlist || playlist === "Select Playlist") {
+          statusEl.textContent = "❌ No playlist selected.";
           return;
         }
-
-        const fullPlaylist = `${category}/${playlist}`;
 
         try {
           const res = await fetch("/command", {
@@ -165,13 +124,13 @@
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
               channel: CHANNEL,
-              playlist: fullPlaylist,
+              playlist: playlist,
             }),
           });
 
           const data = await res.json();
           if (res.ok) {
-            statusEl.textContent = `✅ Channel "${data.channel}" now playing "${category}/${playlist}"`;
+            statusEl.textContent = `✅ Channel "${data.channel}" now playing "${playlist}"`;
           } else {
             statusEl.textContent = `❌ ${data.error}`;
           }
