@@ -60,9 +60,9 @@ PLAYLISTS: dict[str, list[str]] = {
     ],
     "Big City Chillout": [
         "SAD_OLD_MANOR_FULLMIX",
-        "SAD_OLD_MANOR_ALT2",
-        "SAD_OLD_MANOR_ALT3",
-        "SAD_OLD_MANOR_ALT4",
+        "SAD_OLD_MANOR_ALT02",
+        "SAD_OLD_MANOR_ALT03",
+        "SAD_OLD_MANOR_ALT04",
         "SHADY_STREETS_FULLMIX",
         "SHADY_STREETS_MARIMBA",
         "SHADY_STREETS_DULCIMER",
