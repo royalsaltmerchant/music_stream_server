@@ -2,28 +2,23 @@ import base64
 import hashlib
 import hmac
 import queue
-import os
 import re
 import signal
-import time
-import random
-import threading
-import subprocess
 import urllib.parse
 import logging
 import psycopg2
 import uvicorn
 
 from fastapi import FastAPI, Request, Response, Depends, HTTPException
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
-
+from slowapi import Limiter
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 
 from config import (
-    CHUNK_SIZE,
     LISTENER_QUEUE_MAXSIZE,
-    IDLE_TIMEOUT,
     SILENT_BUFFER,
     SESSION_COOKIE_NAME,
     SESSION_SECRET,
@@ -35,9 +30,9 @@ from config import (
     DEV_MODE,
     DEV_USER_EMAIL,
 )
-from tracks import get_track_filename, reload_tracks
+from tracks import reload_tracks
 from playlists import get_playlist, get_all_playlists, reload_playlists
-from cloudfront import get_signed_url
+from channel import Channel
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s - %(message)s"
@@ -45,179 +40,17 @@ logging.basicConfig(
 logger = logging.getLogger("radio")
 logger.level = logging.INFO
 
-
-# === AudioStreamer ===
-class AudioStreamer:
-    def __init__(self, playlist_name: str):
-        self.playlist_name = playlist_name
-        self.listener_queues = {}  # key: channel_name, value: set of queues
-        self.listener_queues_lock = threading.Lock()
-        self.command_queue = queue.Queue()
-        self.thread = threading.Thread(target=self._run, daemon=True)
-
-    def start(self):
-        if not self.thread.is_alive():
-            self.thread.start()
-
-    def add_listener(self, channel_name, q):
-        with self.listener_queues_lock:
-            if channel_name not in self.listener_queues:
-                self.listener_queues[channel_name] = set()
-            self.listener_queues[channel_name].add(q)
-
-    def remove_listener(self, channel_name, q):
-        with self.listener_queues_lock:
-            if channel_name in self.listener_queues:
-                self.listener_queues[channel_name].discard(q)
-                if not self.listener_queues[channel_name]:
-                    del self.listener_queues[channel_name]
-
-    def put_command(self, cmd: str):
-        self.command_queue.put(cmd)
-
-    def _run(self):
-        last_listener_time = time.time()
-        while True:
-            track_keys = get_playlist(self.playlist_name)
-            if not track_keys:
-                logger.warning(f"[!] Playlist '{self.playlist_name}' not found or empty.")
-                time.sleep(5)
-                continue
-
-            # Resolve track keys to filenames, skip any that don't exist
-            tracks = []
-            for key in track_keys:
-                filename = get_track_filename(key)
-                if filename:
-                    tracks.append((key, filename))
-                else:
-                    logger.warning(f"[!] Track key '{key}' not found in registry.")
-
-            if not tracks:
-                logger.warning("[!] No valid tracks found. Waiting...")
-                time.sleep(5)
-                continue
-
-            random.shuffle(tracks)
-
-            for track_key, track_filename in tracks:
-                # Generate signed CloudFront URL for this track
-                track_url = get_signed_url(track_filename)
-                logger.info(f"Now playing: {track_key} ({track_filename})")
-
-                try:
-                    proc = subprocess.Popen(
-                        [
-                            "ffmpeg",
-                            "-hide_banner",
-                            "-loglevel",
-                            "quiet",
-                            "-re",
-                            "-i",
-                            track_url,
-                            "-vn",
-                            "-acodec",
-                            "libmp3lame",
-                            "-ar",
-                            "44100",
-                            "-b:a",
-                            "128k",
-                            "-f",
-                            "mp3",
-                            "-",
-                        ],
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.PIPE,
-                    )
-                except FileNotFoundError:
-                    logger.error("FFmpeg not found in PATH")
-                    time.sleep(5)
-                    continue
-                except Exception as e:
-                    logger.error(f"Failed to start FFmpeg: {e}")
-                    time.sleep(5)
-                    continue
-
-                try:
-                    while True:
-                        try:
-                            cmd = self.command_queue.get_nowait()
-                            if cmd == "stop":
-                                logger.info("[Streamer] Stopped.")
-                                return
-                            elif cmd == "next":
-                                logger.info("[Streamer] Skipping track.")
-                                break
-                            # Removed "change" command - playlist changes handled via Channel.play_playlist()
-                        except queue.Empty:
-                            pass
-
-                        assert proc.stdout is not None
-                        chunk = proc.stdout.read(CHUNK_SIZE)
-                        if chunk:
-                            with self.listener_queues_lock:
-                                if any(self.listener_queues.values()):
-                                    last_listener_time = time.time()
-                                for listeners in list(self.listener_queues.values()):
-                                    for q in listeners:
-                                        try:
-                                            q.put_nowait(chunk)
-                                        except queue.Full:
-                                            pass
-                        else:
-                            logger.info("[Streamer] End of track reached.")
-                            break
-
-                        if time.time() - last_listener_time > IDLE_TIMEOUT:
-                            logger.info(
-                                f"[Streamer] No listeners for {IDLE_TIMEOUT} seconds. Exiting."
-                            )
-                            return
-                finally:
-                    # Ensure FFmpeg process is properly cleaned up
-                    if proc.poll() is None:
-                        proc.kill()
-                    if proc.stdout:
-                        proc.stdout.close()
-                    proc.wait()
+limiter = Limiter(key_func=get_remote_address)
 
 
-# === Channel ===
-class Channel:
-    def __init__(self, name: str):
-        self.name = name
-        self.current_playlist = None
-
-    def play_playlist(self, playlist_name: str, streamers: dict):
-        if self.current_playlist == playlist_name:
-            return
-
-        old_playlist = self.current_playlist
-        self.current_playlist = playlist_name
-
-        if (
-            playlist_name not in streamers
-            or not streamers[playlist_name].thread.is_alive()
-        ):
-            streamer = AudioStreamer(playlist_name=playlist_name)
-            streamers[playlist_name] = streamer
-            streamer.start()
-
-        if old_playlist and old_playlist in streamers:
-            old_streamer = streamers[old_playlist]
-            new_streamer = streamers[playlist_name]
-
-            if self.name in old_streamer.listener_queues:
-                for q in list(old_streamer.listener_queues[self.name]):
-                    old_streamer.remove_listener(self.name, q)
-                    new_streamer.add_listener(self.name, q)
-
-    def send_command(self, cmd: str, streamers: dict):
-        if self.current_playlist and self.current_playlist in streamers:
-            streamers[self.current_playlist].put_command(cmd)
+async def rate_limit_handler(request: Request, exc: Exception):
+    detail = exc.detail if isinstance(exc, RateLimitExceeded) else str(exc)
+    return JSONResponse(
+        status_code=429,
+        content={"error": "Too Many Requests", "detail": str(detail)},
+    )
 
 
-# === Radio Web Service ===
 class RadioWebService:
     MAX_CHANNEL_NAME_LENGTH = 256
 
@@ -225,6 +58,8 @@ class RadioWebService:
         self.app = FastAPI()
         self.channels = {}
         self.streamers = {}
+        self.app.state.limiter = limiter
+        self.app.add_exception_handler(RateLimitExceeded, rate_limit_handler)
         self.app.add_middleware(
             BaseHTTPMiddleware, dispatch=self.create_session_middleware()
         )
@@ -338,11 +173,18 @@ class RadioWebService:
             )
 
     def _define_routes(self):
+        @self.app.get("/robots.txt")
+        @limiter.limit("60/minute")
+        def robots_txt(request: Request):
+            return FileResponse("static/robots.txt", media_type="text/plain")
+
         @self.app.get("/")
-        def index():
+        @limiter.limit("30/minute")
+        def index(request: Request):
             return FileResponse("static/index.html")
 
         @self.app.get("/listen")
+        @limiter.limit("30/minute")
         def listen(request: Request):
             channel_name = request.query_params.get("channel", "").strip()
             valid, result = self._validate_channel_name(channel_name)
@@ -353,6 +195,7 @@ class RadioWebService:
             return FileResponse("static/listener.html")
 
         @self.app.get("/host")
+        @limiter.limit("20/minute")
         async def host(
             request: Request,
             _: None = Depends(self.login_required),
@@ -360,6 +203,7 @@ class RadioWebService:
             return FileResponse("static/host.html")
 
         @self.app.get("/admin")
+        @limiter.limit("20/minute")
         async def admin_page(
             request: Request,
             _: None = Depends(self.login_required),
@@ -393,6 +237,7 @@ class RadioWebService:
             return FileResponse("static/admin.html")
 
         @self.app.get("/playlists")
+        @limiter.limit("30/minute")
         def get_playlists_route(
             request: Request,
             _: None = Depends(self.login_required),
@@ -400,6 +245,7 @@ class RadioWebService:
             return {"playlists": get_all_playlists()}
 
         @self.app.post("/admin/reload")
+        @limiter.limit("5/minute")
         async def admin_reload(
             request: Request,
             _: None = Depends(self.login_required),
@@ -443,6 +289,7 @@ class RadioWebService:
             return {"status": "ok", "message": "Tracks and playlists reloaded"}
 
         @self.app.post("/command")
+        @limiter.limit("60/minute")
         async def command(
             request: Request,
             _: None = Depends(self.login_required),
@@ -483,6 +330,7 @@ class RadioWebService:
                 return {"error": str(e)}, 500
 
         @self.app.get("/stream")
+        @limiter.limit("10/minute")
         async def stream(request: Request):
             channel_name = request.query_params.get("channel", "").strip()
             valid, result = self._validate_channel_name(channel_name)
