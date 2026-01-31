@@ -376,7 +376,7 @@ class RadioWebService:
                     with psycopg2.connect(SESSION_DB_DSN) as conn:
                         with conn.cursor() as cur:
                             cur.execute(
-                                "SELECT email FROM users WHERE id = %s",
+                                'SELECT email FROM "public"."User" WHERE id = %s',
                                 (user_id,),
                             )
                             row = cur.fetchone()
@@ -418,7 +418,7 @@ class RadioWebService:
                     with psycopg2.connect(SESSION_DB_DSN) as conn:
                         with conn.cursor() as cur:
                             cur.execute(
-                                "SELECT email FROM users WHERE id = %s",
+                                'SELECT email FROM "public"."User" WHERE id = %s',
                                 (user_id,),
                             )
                             row = cur.fetchone()

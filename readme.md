@@ -49,7 +49,8 @@ CLOUDFRONT_PRIVATE_KEY_PATH=./private_frc_cloudfront_key.pem
 ### Optional
 
 ```bash
-TRACKS_CSV_PATH=tracks.csv          # Default: tracks.csv
+TRACKS_CSV_PATH=tracks.csv          # Default: tracks.csv (or Google Sheets URL)
+PLAYLISTS_CSV_PATH=playlists.csv    # Default: playlists.csv (or Google Sheets URL)
 SESSION_COOKIE_NAME=frc_session     # Default: frc_session
 HOST=0.0.0.0                        # Default: 0.0.0.0
 PORT=5000                           # Default: 5000
@@ -59,11 +60,28 @@ IDLE_TIMEOUT=600                    # Default: 600 (seconds)
 LOGIN_URL=https://example.com/login # Redirect URL for unauthenticated users
 ```
 
+### Admin
+
+```bash
+ADMIN_EMAILS=admin@example.com,other@example.com  # Comma-separated email whitelist
+```
+
+### Development
+
+```bash
+DEV_MODE=true                       # Bypass auth checks for local development
+DEV_USER_EMAIL=dev@localhost        # Email used for admin checks in dev mode
+```
+
 ---
 
-## Track Registry (CSV)
+## Track Registry
 
-Tracks are registered in a CSV file with the following headers:
+Tracks are registered in a CSV file or Google Sheets (set via `TRACKS_CSV_PATH`).
+
+### CSV Format
+
+The CSV should have the following headers:
 
 ```
 Track Name,File Name,KEY TITLE,Track Number,Album,Psudo-Tags,Previous Titles
@@ -77,20 +95,42 @@ Haunting Tavern,haunting_tavern_remst_fullmix.mp3,HAUNTING_TAVERN_REMST_FULLMIX,
 - **KEY TITLE**: Unique identifier used in playlist definitions
 - **File Name**: Filename in S3 (stored at `s3://bucket/audio/{filename}`)
 
+### Google Sheets
+
+You can use a Google Sheets URL directly:
+
+```bash
+TRACKS_CSV_PATH=https://docs.google.com/spreadsheets/d/YOUR_SHEET_ID/edit?gid=0
+```
+
 ---
 
 ## Playlist Definitions
 
-Playlists are defined in `playlists.py`:
+Playlists are loaded from a CSV file or Google Sheets (set via `PLAYLISTS_CSV_PATH`).
 
-```python
-PLAYLISTS = {
-    "tavern_ambience": ["HAUNTING_TAVERN_REMST_FULLMIX", "TAVERN_BUSTLE"],
-    "combat_epic": ["BATTLE_EPIC1", "BATTLE_EPIC2"],
-}
+### CSV Format
+
+The CSV should have the following columns:
+
+| Playlist Title | Track Key |
+|----------------|-----------|
+| Tavern Ambience | HAUNTING_TAVERN_REMST_FULLMIX |
+| Tavern Ambience | TAVERN_BUSTLE |
+| Combat Epic | BATTLE_EPIC1 |
+| Combat Epic | BATTLE_EPIC2 |
+
+Tracks are grouped by `Playlist Title` and appended in order.
+
+### Google Sheets
+
+You can use a Google Sheets URL directly:
+
+```bash
+PLAYLISTS_CSV_PATH=https://docs.google.com/spreadsheets/d/YOUR_SHEET_ID/edit?gid=0
 ```
 
-Each playlist maps to a list of track keys from the CSV.
+The sheet must be publicly accessible (or "Anyone with the link can view").
 
 ---
 
@@ -193,6 +233,41 @@ Or switch to a playlist by name:
 
 ### `GET /stream?channel=some_channel`
 Streams MP3 audio for that channel.
+
+### `GET /admin`
+Requires login and email in `ADMIN_EMAILS` whitelist. Shows admin panel with reload controls.
+
+### `POST /admin/reload`
+Requires login and email in `ADMIN_EMAILS` whitelist. Reloads tracks and playlists from their configured sources.
+
+Response:
+```json
+{
+  "status": "ok",
+  "message": "Tracks and playlists reloaded"
+}
+```
+
+---
+
+## Reloading Data
+
+Tracks and playlists can be reloaded without restarting the server:
+
+### Via Admin UI
+Navigate to `/admin` (requires whitelisted email) and click the reload button.
+
+### Via CLI
+```bash
+python reload_tracks_cli.py
+```
+
+This sends `SIGHUP` to the running server process.
+
+### Via Signal
+```bash
+kill -HUP $(pgrep -f "python.*radio.py")
+```
 
 ---
 
