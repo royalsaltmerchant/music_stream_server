@@ -31,9 +31,12 @@ from config import (
     HOST,
     PORT,
     LOGIN_URL,
+    ADMIN_EMAILS,
+    DEV_MODE,
+    DEV_USER_EMAIL,
 )
 from tracks import get_track_filename, reload_tracks
-from playlists import get_playlist, get_all_playlists
+from playlists import get_playlist, get_all_playlists, reload_playlists
 from cloudfront import get_signed_url
 
 logging.basicConfig(
@@ -323,6 +326,10 @@ class RadioWebService:
             return False, None
 
     async def login_required(self, request: Request):
+        if DEV_MODE:
+            request.state.user_id = 0
+            request.state.dev_mode = True
+            return
         if not getattr(request.state, "user_id", None):
             raise HTTPException(
                 status_code=307,
@@ -352,12 +359,88 @@ class RadioWebService:
         ):
             return FileResponse("static/host.html")
 
+        @self.app.get("/admin")
+        async def admin_page(
+            request: Request,
+            _: None = Depends(self.login_required),
+        ):
+            # Check if user is in admin whitelist
+            if getattr(request.state, "dev_mode", False):
+                user_email = DEV_USER_EMAIL
+            else:
+                user_id = getattr(request.state, "user_id", None)
+                if not user_id:
+                    raise HTTPException(status_code=401, detail="Unauthorized")
+
+                try:
+                    with psycopg2.connect(SESSION_DB_DSN) as conn:
+                        with conn.cursor() as cur:
+                            cur.execute(
+                                "SELECT email FROM users WHERE id = %s",
+                                (user_id,),
+                            )
+                            row = cur.fetchone()
+                            if not row:
+                                raise HTTPException(status_code=404, detail="User not found")
+                            user_email = row[0]
+                except psycopg2.Error as e:
+                    logger.error(f"[Admin] DB error: {e}")
+                    raise HTTPException(status_code=500, detail="Database error")
+
+            if user_email not in ADMIN_EMAILS:
+                raise HTTPException(status_code=403, detail="Forbidden")
+
+            return FileResponse("static/admin.html")
+
         @self.app.get("/playlists")
         def get_playlists_route(
             request: Request,
             _: None = Depends(self.login_required),
         ):
             return {"playlists": get_all_playlists()}
+
+        @self.app.post("/admin/reload")
+        async def admin_reload(
+            request: Request,
+            _: None = Depends(self.login_required),
+        ):
+            # In dev mode, use configured dev email
+            if getattr(request.state, "dev_mode", False):
+                user_email = DEV_USER_EMAIL
+                logger.info(f"[Admin] Dev mode - using email: {user_email}")
+            else:
+                user_id = getattr(request.state, "user_id", None)
+                if not user_id:
+                    return {"error": "Unauthorized"}, 401
+
+                # Query users table for email
+                try:
+                    with psycopg2.connect(SESSION_DB_DSN) as conn:
+                        with conn.cursor() as cur:
+                            cur.execute(
+                                "SELECT email FROM users WHERE id = %s",
+                                (user_id,),
+                            )
+                            row = cur.fetchone()
+                            if not row:
+                                logger.warning(f"[Admin] User {user_id} not found in users table")
+                                return {"error": "User not found"}, 404
+                            user_email = row[0]
+                except Exception as e:
+                    logger.error(f"[Admin] DB error looking up user email: {e}")
+                    return {"error": "Database error"}, 500
+
+            # Check if email is in admin whitelist
+            if user_email not in ADMIN_EMAILS:
+                logger.warning(f"[Admin] Unauthorized reload attempt by {user_email}")
+                return {"error": "Forbidden"}, 403
+
+            # Reload both tracks and playlists
+            logger.info(f"[Admin] Reload triggered by {user_email}")
+            reload_tracks()
+            reload_playlists()
+
+            return {"status": "ok", "message": "Tracks and playlists reloaded"}
 
         @self.app.post("/command")
         async def command(
@@ -452,11 +535,12 @@ class RadioWebService:
                 return Response(content=str(e), status_code=500)
 
 
-# === Signal Handler for Track Reload ===
+# === Signal Handler for Data Reload ===
 def _handle_sighup(signum, frame):
-    """Handle SIGHUP to reload tracks from source."""
-    logger.info("[Signal] Received SIGHUP, reloading tracks...")
+    """Handle SIGHUP to reload tracks and playlists from source."""
+    logger.info("[Signal] Received SIGHUP, reloading tracks and playlists...")
     reload_tracks()
+    reload_playlists()
 
 
 signal.signal(signal.SIGHUP, _handle_sighup)
@@ -464,6 +548,11 @@ signal.signal(signal.SIGHUP, _handle_sighup)
 
 # === Main Entrypoint ===
 if __name__ == "__main__":
+    # Load tracks and playlists on startup
+    logger.info("Loading tracks and playlists...")
+    reload_tracks()
+    reload_playlists()
+
     service = RadioWebService()
     logger.info(f"Server running at http://{HOST}:{PORT}")
     uvicorn.run(service.app, host=HOST, port=PORT)

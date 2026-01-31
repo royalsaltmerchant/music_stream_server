@@ -1,93 +1,65 @@
-# Static playlist definitions
-# Each playlist maps to a list of track keys from the CSV
+import logging
+import urllib.error
+from config import PLAYLISTS_CSV_PATH
+from sheets_utils import read_csv
 
-PLAYLISTS: dict[str, list[str]] = {
-    "City Chill Test": [
-        "EMBERS",
-        "DIMITRI_THE_RUSSION_FULLMIX",
-        "251230TATOMJULJAD",
-        "GRILL_THIS_AMB",
-        "GRILL_THIS_FULLMIX",
-        "SLOW_COOKING_AMB",
-        "SLOW_COOKING_CUTDOWN",
-        "SLOW_COOKING_FULLMIX",
-        "LOST_WORLD",
-        "UNSEEN",
-    ],
-    "Big City Combat": [
-        "BREAKIN",
-        "BYTE_ME",
-        "NOOBSLAYER92",
-        "BULLETPROOF",
-        "BREAKIN",
-        "PLEASE_RESET_YOUR_PASSWORD",
-        "CHASING_GHOSTS",
-        "DEMONROBOTODLER",
-        "DISTOPIA",
-        "FIGHT_TOWN",
-        "SLOW_COOKING_ACTION",
-        "SLOW_COOKING_CUTDOWN",
-        "IMPENDING_DOOM_FULLMIX",
-        "BATTLE_OF_THE_BOOKCLUB_FULLMIX",
-        "MADMANATEE_FULLMIX.MP3",
-        "MADMANATEE_STING",
-        "RESOLUTE",
-        "SUPER_FUTURE_CAR_CHASE_FULLMIX",
-        "SUPER_FUTURE_CAR_CHASE_CUTDOWN1",
-        "SUPER_FUTURE_CAR_CHASE_CUTDOWN2",
-        "SUPER_FUTURE_CAR_CHASE_CUTDOWN3",
-        "SYSTEM_OVERLOAD",
-        "THE_WITCH_AND_THE_DRAGON",
-        "INTERSPIRATION",
-        "COOLCRESS",
-        "CONFRONTATION",
-        "CASTLE_CRIME",
-    ],
-    "Big City Tensions": [
-        "BLACKHATS",
-        "CODE_BREAKERS",
-        "CYBER_CRIMINAL",
-        "BULLETPROOF",
-        "IN_THE_CODE",
-        "GRILL_THIS_FULLMIX",
-        "LIKE_YOURE_BEING_WATCHED",
-        "CREEPILY",
-        "DARKNESS",
-        "IMPENDING_DOOM_FULLMIX",
-        "AND_DENIAL",
-        "SUNKEN_JAR",
-        "SACRED_DWELLING" "LOST_WORLD",
-    ],
-    "Big City Chillout": [
-        "SAD_OLD_MANOR_FULLMIX",
-        "SAD_OLD_MANOR_ALT02",
-        "SAD_OLD_MANOR_ALT03",
-        "SAD_OLD_MANOR_ALT04",
-        "SHADY_STREETS_FULLMIX",
-        "SHADY_STREETS_MARIMBA",
-        "SHADY_STREETS_DULCIMER",
-        "SHADY_STREETS_VIOLADEGAMBA",
-        "HAUNTING_TAVERN_REMST_FULLMIX",
-        "HAUNTING_TAVERN_REMST_LITE",
-        "HAUNTING_TAVERN_REMST_CUTDOWN",
-        "PEACEFUL_EXPLORATION",
-        "MEDIEVAL_FOLKSONG",
-        "DISTILLATION",
-        "SLOW_COOKING_AMB",
-        "SNOWYS_THEME",
-        "THE_MEADOW",
-        "LIGHT",
-        "MISCHIEF",
-        "RUBIKS_CUBE",
-    ],
-}
+logger = logging.getLogger("radio.playlists")
+
+# Playlist registry: Playlist Title -> list of Track Keys
+_playlists: dict[str, list[str]] = {}
+
+
+def _load_playlists():
+    """Load playlists from CSV file or Google Sheets URL.
+
+    Expects columns: "Playlist Title", "Track Key"
+    Builds playlists by appending each track to its playlist.
+    """
+    global _playlists
+    new_playlists: dict[str, list[str]] = {}
+
+    try:
+        logger.info(f"Loading playlists from {PLAYLISTS_CSV_PATH}...")
+        reader, file_handle = read_csv(PLAYLISTS_CSV_PATH)
+
+        for row in reader:
+            playlist_title = row.get("Playlist Title", "").strip()
+            track_key = row.get("Track Key", "").strip()
+            if playlist_title and track_key:
+                if playlist_title not in new_playlists:
+                    new_playlists[playlist_title] = []
+                new_playlists[playlist_title].append(track_key)
+
+        if file_handle:
+            file_handle.close()
+
+        _playlists = new_playlists
+        logger.info(f"Loaded {len(_playlists)} playlists")
+
+    except FileNotFoundError:
+        logger.error(f"Playlists CSV not found: {PLAYLISTS_CSV_PATH}")
+    except urllib.error.URLError as e:
+        logger.error(f"Failed to fetch playlists from URL: {e}")
+    except Exception as e:
+        logger.error(f"Failed to load playlists CSV: {e}")
 
 
 def get_playlist(name: str) -> list[str] | None:
     """Get track keys for a playlist."""
-    return PLAYLISTS.get(name)
+    if not _playlists:
+        _load_playlists()
+    return _playlists.get(name)
 
 
 def get_all_playlists() -> list[str]:
     """Get all playlist names."""
-    return list(PLAYLISTS.keys())
+    if not _playlists:
+        _load_playlists()
+    return list(_playlists.keys())
+
+
+def reload_playlists():
+    """Force reload playlists from CSV."""
+    global _playlists
+    _playlists = {}
+    _load_playlists()

@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-CLI script to reload tracks in the running radio server.
+CLI script to reload tracks and playlists in the running radio server.
 
 Usage:
     python reload_tracks_cli.py
 
-This sends SIGHUP to the running radio.py process, triggering a track reload
-from the configured source (local CSV or Google Sheets).
+This sends SIGHUP to the running radio.py process, triggering a reload
+of both tracks and playlists from their configured sources.
 """
 import os
 import signal
@@ -40,7 +40,7 @@ def main():
 
     try:
         os.kill(pid, signal.SIGHUP)
-        print(f"Sent SIGHUP to radio server (PID {pid}) - tracks will reload")
+        print(f"Sent SIGHUP to radio server (PID {pid}) - tracks and playlists will reload")
     except ProcessLookupError:
         print(f"Error: Process {pid} not found", file=sys.stderr)
         sys.exit(1)

@@ -14,6 +14,16 @@ MUSIC_BASE_DIR = os.getenv("MUSIC_BASE_DIR", "music")
 # Track registry
 TRACKS_CSV_PATH = os.getenv("TRACKS_CSV_PATH", "tracks.csv")
 
+# Playlist registry (Google Sheets URL or local CSV path)
+PLAYLISTS_CSV_PATH = os.getenv("PLAYLISTS_CSV_PATH", "playlists.csv")
+
+# Admin whitelist for reload endpoint (comma-separated emails)
+ADMIN_EMAILS = [e.strip() for e in os.getenv("ADMIN_EMAILS", "").split(",") if e.strip()]
+
+# Dev mode: bypass auth checks (set to "true" to enable)
+DEV_MODE = os.getenv("DEV_MODE", "").lower() == "true"
+DEV_USER_EMAIL = os.getenv("DEV_USER_EMAIL", "dev@localhost")
+
 # CloudFront configuration
 CLOUDFRONT_DOMAIN = os.getenv("CLOUDFRONT_DOMAIN") or exit("CLOUDFRONT_DOMAIN is required")
 CLOUDFRONT_KEY_ID = os.getenv("CLOUDFRONT_KEY_ID") or exit("CLOUDFRONT_KEY_ID is required")
