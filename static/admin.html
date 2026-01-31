@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>FRC Radio – Admin</title>
+    <link rel="stylesheet" href="static/style.css" />
+  </head>
+  <body>
+    <h1>FRC Radio – Admin Panel</h1>
+
+    <h4>Reload Data</h4>
+    <p style="font-size: 0.9em; color: #888; margin-bottom: 20px;">
+      Reload tracks and playlists from Google Sheets
+    </p>
+    <button id="reload-btn" onclick="reloadData()">Reload Tracks & Playlists</button>
+    <p id="status" style="margin-top: 20px;"></p>
+
+    <script>
+      async function reloadData() {
+        const status = document.getElementById("status");
+        const btn = document.getElementById("reload-btn");
+
+        btn.disabled = true;
+        status.style.color = "#888";
+        status.textContent = "Reloading...";
+
+        try {
+          const res = await fetch("/admin/reload", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+          });
+
+          const data = await res.json();
+          if (res.ok) {
+            status.style.color = "var(--green)";
+            status.textContent = data.message;
+          } else {
+            status.style.color = "var(--red1)";
+            status.textContent = data.error || "Reload failed";
+          }
+        } catch (err) {
+          status.style.color = "var(--red1)";
+          status.textContent = "Reload request failed.";
+          console.error(err);
+        } finally {
+          btn.disabled = false;
+        }
+      }
+    </script>
+  </body>
+</html>
